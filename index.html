@@ -1,0 +1,845 @@
+<!doctype html>
+<html lang="pl">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Okna Drewniane WOOD Natural - Produkcja</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div class="bg-shape shape-a"></div>
+    <div class="bg-shape shape-b"></div>
+    <div class="bg-shape shape-c"></div>
+
+    <header class="app-header">
+      <div>
+        <p class="eyebrow">Produkcja okien drewnianych</p>
+        <h1>Okna drewniane WOOD Natural - Produkcja</h1>
+      </div>
+      <div class="header-stats">
+        <div class="chip">
+          <span>Data</span>
+          <strong id="todayDate"></strong>
+        </div>
+        <div class="chip">
+          <span>Aktywne zlecenia</span>
+          <strong id="activeOrdersCount">0</strong>
+        </div>
+      </div>
+    </header>
+
+    <main class="layout">
+      <nav class="sidebar">
+        <button class="nav-btn active" data-section="dashboard"><span>1</span> Logowanie</button>
+        <button class="nav-btn" data-section="orders"><span>2</span> Zamowienia</button>
+        <button class="nav-btn" data-section="kpi"><span>3</span> KPI</button>
+        <button class="nav-btn" data-section="gantt"><span>4</span> Gantt</button>
+        <button class="nav-btn" data-section="reports"><span>5</span> Raporty</button>
+        <button class="nav-btn" data-section="execution"><span>6</span> Wykonanie</button>
+        <button class="nav-btn" data-section="feedback"><span>7</span> Informacja zwrotna</button>
+        <button class="nav-btn" data-section="archive"><span>8</span> Archiwum</button>
+        <button class="nav-btn" data-section="users"><span>9</span> Uzytkownicy</button>
+        <button class="nav-btn" data-section="settings"><span>10</span> Ustawienia</button>
+      </nav>
+
+      <section class="content">
+        <section class="view active" id="view-dashboard">
+          <div class="card login-card">
+            <h2>Panel logowania</h2>
+            <p id="loginStatusText">Zaloguj sie, aby odblokowac pozostale sekcje.</p>
+            <form id="loginForm" class="inline-controls">
+              <label>
+                Login
+                <input id="loginInput" name="login" autocomplete="username" required />
+              </label>
+              <label>
+                Haslo
+                <input id="loginPasswordInput" name="password" type="password" autocomplete="current-password" required />
+              </label>
+              <button type="submit" id="loginBtn">Zaloguj</button>
+              <button type="button" id="logoutBtn" class="panel-hidden">Wyloguj</button>
+            </form>
+            <p id="currentUserInfo" class="panel-hidden"></p>
+            <div id="postLoginLinks" class="card-grid dashboard-grid panel-hidden"></div>
+          </div>
+        </section>
+
+        <section class="view" id="view-orders">
+          <div class="card-grid dashboard-grid">
+            <article class="card tile">
+              <h2>Dodaj zamowienie</h2>
+              <p>Kliknij, aby otworzyc okno nowego zamowienia.</p>
+              <button type="button" id="openOrderModalBtn">Dodaj zamowienie</button>
+            </article>
+          </div>
+
+          <div class="card orders-list-card">
+            <h2>Zamowienia</h2>
+            <p>Lista zamowien. Uzyj przycisku "Szczegoly", aby otworzyc okno zamowienia.</p>
+            <div class="inline-controls orders-sticky-bar">
+              <label>
+                Szukaj (nr / klient / opracowuje)
+                <input type="text" id="ordersSearchInput" placeholder="np. DEMO-2026 lub klient" />
+              </label>
+              <label>
+                Szukaj po pozycjach
+                <input
+                  type="text"
+                  id="ordersPositionSearchInput"
+                  placeholder="np. IV78, luk, skos, 1200x1400, zielony"
+                />
+              </label>
+              <label>
+                Status
+                <select id="ordersStatusFilter"></select>
+              </label>
+              <label>
+                Tydzien roku (plan)
+                <input type="number" id="ordersWeekFilterInput" min="1" max="53" step="1" placeholder="np. 16" />
+              </label>
+              <button type="button" id="selectCompletedOrdersBtn">Zaznacz zakonczone</button>
+              <button type="button" id="clearOrdersFiltersBtn">Wyczysc filtry</button>
+              <button type="button" id="archiveCompletedOrdersBtn">Przenies zaznaczone do archiwum</button>
+            </div>
+            <div class="table-wrap orders-table-wrap">
+              <table class="orders-table">
+                <thead>
+                  <tr>
+                    <th data-order-sort="orderNumber">Nr</th>
+                    <th data-order-sort="client">Klient</th>
+                    <th data-order-sort="entryDate">Data wejscia</th>
+                    <th data-order-sort="startDate">Start planowania</th>
+                    <th data-order-sort="plannedProductionDate">Planowana produkcja</th>
+                    <th data-order-sort="plannedWeek">Tydz. planu</th>
+                    <th data-order-sort="positionsCount">Pozycje</th>
+                    <th data-order-sort="orderStatus">Status</th>
+                    <th data-order-sort="completedAt">Data zakonczenia</th>
+                    <th data-order-sort="blockedMaterials">Blokady mat.</th>
+                    <th>Szczegoly / archiwum</th>
+                    <th data-order-sort="extras">Uwagi</th>
+                  </tr>
+                </thead>
+                <tbody id="ordersTableBody"></tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+
+        <section class="view" id="view-archive">
+          <div class="card">
+            <h2>Archiwum zamowien</h2>
+            <p>Lista zamowien zarchiwizowanych (najczesciej zakonczonych).</p>
+            <div class="inline-controls">
+              <label>
+                Szukaj (nr / klient / opracowuje)
+                <input type="text" id="archiveSearchInput" placeholder="np. DEMO-2026 lub klient" />
+              </label>
+              <label>
+                Tydzien roku (plan)
+                <input type="number" id="archiveWeekFilterInput" min="1" max="53" step="1" placeholder="np. 16" />
+              </label>
+              <label>
+                Data zakonczenia
+                <input type="date" id="archiveDateFilterInput" />
+              </label>
+              <button type="button" id="clearArchiveFiltersBtn">Wyczysc filtry</button>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Nr</th>
+                    <th>Klient</th>
+                    <th>Data wejscia</th>
+                    <th>Planowana produkcja</th>
+                    <th>Tydz. roku</th>
+                    <th>Data zakonczenia</th>
+                    <th>Status</th>
+                    <th>Pozycje</th>
+                    <th>Akcja</th>
+                  </tr>
+                </thead>
+                <tbody id="archiveTableBody"></tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+
+        <section class="view" id="view-kpi">
+          <div class="card">
+            <h2>KPI</h2>
+            <div class="card-grid dashboard-grid" id="kpiCards"></div>
+          </div>
+          <div class="card">
+            <h2 id="kpiDrilldownTitle">Lista zamowien po KPI</h2>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Nr</th>
+                    <th>Status pozycji</th>
+                    <th>Ilosc pozycji</th>
+                    <th>Planowana data</th>
+                    <th>Szczegoly</th>
+                  </tr>
+                </thead>
+                <tbody id="kpiDrilldownBody"></tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+
+        <section class="view" id="view-gantt">
+          <div class="card gantt-full-card">
+            <h2>Gantt dzienny zamowien</h2>
+            <div class="inline-controls">
+              <label>
+                Liczba dni kalendarza
+                <input type="number" id="ganttDaysCountInput" min="14" max="730" step="1" value="180" />
+              </label>
+              <label>
+                Szukaj zamowienia
+                <input type="text" id="ganttSearchInput" placeholder="Numer, klient, opracowuje" />
+              </label>
+              <label>
+                Status
+                <select id="ganttStatusFilter"></select>
+              </label>
+              <button type="button" id="applyGanttDaysBtn">Ustaw zakres dni</button>
+              <button type="button" id="clearGanttFiltersBtn">Wyczysc filtry</button>
+            </div>
+            <div id="ganttBoard" class="gantt-board"></div>
+          </div>
+        </section>
+
+        <section class="view" id="view-reports">
+          <div class="card report-card">
+            <h2>Raport dzienny stanowiska</h2>
+            <div class="inline-controls report-controls">
+              <label>
+                Dzien
+                <input type="date" id="reportDate" />
+              </label>
+              <label>
+                Stanowisko
+                <select id="reportStationSelect"></select>
+              </label>
+              <button id="runReportBtn" type="button">Pokaz raport</button>
+              <button id="printReportBtn" type="button">Drukuj kokpit</button>
+            </div>
+            <p id="reportSummary"></p>
+            <div id="reportCockpit" class="report-cockpit"></div>
+          </div>
+        </section>
+
+        <section class="view" id="view-execution">
+          <div class="card">
+            <h2>Wykonanie vs plan</h2>
+            <div class="inline-controls execution-controls">
+              <label>
+                Zakres
+                <select id="executionPeriodMode">
+                  <option value="day">Dzien</option>
+                  <option value="week">Tydzien</option>
+                </select>
+              </label>
+              <label>
+                Data bazowa
+                <input type="date" id="executionAnchorDate" />
+              </label>
+              <button id="runExecutionBtn" type="button">Pokaz wykonanie</button>
+            </div>
+            <p id="executionSummary">Brak danych.</p>
+            <div id="executionKpiCards" class="card-grid dashboard-grid"></div>
+          </div>
+
+          <div class="card">
+            <h2>Wydajnosc dzialow</h2>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Dzial</th>
+                    <th>Plan (min)</th>
+                    <th>Wykonanie (min)</th>
+                    <th>Realizacja planu (%)</th>
+                    <th>Pojemnosc (min)</th>
+                    <th>Wydajnosc (%)</th>
+                  </tr>
+                </thead>
+                <tbody id="executionDepartmentBody"></tbody>
+              </table>
+            </div>
+          </div>
+
+          <div class="card">
+            <h2>Zamowienia: plan i wykonanie</h2>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Nr zamowienia</th>
+                    <th>Status</th>
+                    <th>Plan (min)</th>
+                    <th>Wykonanie (min)</th>
+                    <th>Realizacja (%)</th>
+                  </tr>
+                </thead>
+                <tbody id="executionOrdersBody"></tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+
+        <section class="view" id="view-workload">
+          <div class="card">
+            <h2>Oblozenie stanowisk (minuty zaplanowane)</h2>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Stanowisko</th>
+                    <th>Dzial</th>
+                    <th>Minuty</th>
+                  </tr>
+                </thead>
+                <tbody id="workloadTableBody"></tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+
+        <section class="view" id="view-feedback">
+          <div class="card">
+            <h2>Informacja zwrotna brygadzisty</h2>
+            <div class="inline-controls feedback-filters feedback-filters-top">
+              <label>
+                Zamowienie
+                <select id="feedbackOrderSelect"></select>
+              </label>
+              <label>
+                Status zamowienia
+                <select id="feedbackOrderStatusFilter"></select>
+              </label>
+              <label>
+                Status pozycji (KPI)
+                <select id="feedbackOrderPositionStatusFilter"></select>
+              </label>
+              <label>
+                Ustaw dzial statusu
+                <select id="feedbackDepartmentSelect"></select>
+              </label>
+            </div>
+            <div class="inline-controls feedback-toolbar feedback-filters">
+              <label>
+                Filtr pozycji
+                <input id="feedbackSearchInput" type="text" placeholder="Numer, technologia, dzial, status" />
+              </label>
+              <label>
+                Status realizacji
+                <select id="feedbackWorkflowStatusSelect">
+                  <option value="">Bez zmiany</option>
+                  <option value="pending">Planowana</option>
+                  <option value="in_progress">W toku</option>
+                  <option value="done">Zakonczona</option>
+                </select>
+              </label>
+              <label>
+                % realizacji
+                <input id="feedbackProgressPercentInput" type="number" min="0" max="100" step="1" placeholder="bez zmiany" />
+              </label>
+              <button id="feedbackClearFiltersBtn" type="button">Wyczysc filtry</button>
+              <p id="feedbackSelectionInfo" class="feedback-selection-info">Brak danych.</p>
+            </div>
+            <div id="feedbackPositions" class="feedback-list"></div>
+            <div class="feedback-actions">
+              <button id="selectAllPositionsBtn" type="button">Zaznacz widoczne</button>
+              <button id="clearSelectedPositionsBtn" type="button">Odznacz wszystkie</button>
+              <button id="startPositionsBtn" type="button">Rozpocznij zaznaczone</button>
+              <button id="finishPositionsBtn" type="button">Zakoncz zaznaczone</button>
+              <button id="setFeedbackDepartmentBtn" type="button">Ustaw dzial dla zaznaczonych</button>
+              <button id="applyFeedbackChangesBtn" type="button">Zapisz status i % dla zaznaczonych</button>
+            </div>
+          </div>
+        </section>
+
+        <section class="view" id="view-users">
+          <div class="card">
+            <h2>Uzytkownicy</h2>
+            <p id="usersAdminHint" class="panel-hidden">Tylko administrator moze dodawac, edytowac i usuwac uzytkownikow.</p>
+            <form id="userForm" class="form-grid">
+              <label>
+                Imie i nazwisko
+                <input name="name" required />
+              </label>
+              <label>
+                Login
+                <input name="login" autocomplete="username" required />
+              </label>
+              <label>
+                Haslo
+                <input type="password" name="password" autocomplete="new-password" required />
+              </label>
+              <label>
+                Rola
+                <select name="role" id="userRoleSelect">
+                  <option value="user">Uzytkownik</option>
+                  <option value="admin">Admin</option>
+                </select>
+              </label>
+              <label>
+                Dzial
+                <select name="department">
+                  <option value="Maszynownia">Maszynownia</option>
+                  <option value="Lakiernia">Lakiernia</option>
+                  <option value="Kompletacja">Kompletacja</option>
+                  <option value="Kosmetyka">Kosmetyka</option>
+                  <option value="Dokumentacja">Dokumentacja</option>
+                </select>
+              </label>
+              <label class="full">
+                Widoczne pola / sekcje
+                <div id="userPermissionsGrid" class="working-days-grid">
+                  <label class="checkbox-line"><input type="checkbox" name="visibleSection" value="orders" checked />Zamowienia</label>
+                  <label class="checkbox-line"><input type="checkbox" name="visibleSection" value="kpi" />KPI</label>
+                <label class="checkbox-line"><input type="checkbox" name="visibleSection" value="gantt" checked />Gantt</label>
+                <label class="checkbox-line"><input type="checkbox" name="visibleSection" value="reports" checked />Raporty</label>
+                <label class="checkbox-line"><input type="checkbox" name="visibleSection" value="execution" checked />Wykonanie</label>
+                <label class="checkbox-line"><input type="checkbox" name="visibleSection" value="feedback" checked />Informacja zwrotna</label>
+                <label class="checkbox-line"><input type="checkbox" name="visibleSection" value="archive" />Archiwum</label>
+                <label class="checkbox-line"><input type="checkbox" name="visibleSection" value="users" />Uzytkownicy</label>
+                  <label class="checkbox-line"><input type="checkbox" name="visibleSection" value="settings" />Ustawienia</label>
+                </div>
+              </label>
+              <div class="full inline-controls">
+                <button id="userSubmitBtn" type="submit">Dodaj uzytkownika</button>
+                <button id="cancelUserEditBtn" type="button" class="ghost-btn panel-hidden">Anuluj edycje</button>
+              </div>
+            </form>
+            <div id="usersList" class="simple-list"></div>
+          </div>
+        </section>
+
+        <section class="view" id="view-settings">
+          <div class="card">
+            <h2>Ustawienia planowania</h2>
+            <form id="settingsForm" class="form-grid">
+              <label>
+                Minut na zmiane
+                <input type="number" min="60" max="720" name="minutesPerShift" required />
+              </label>
+              <label class="full">
+                Dni pracujace
+                <div class="working-days-grid">
+                  <label class="checkbox-line"><input type="checkbox" name="workingDay" value="1" />Pon</label>
+                  <label class="checkbox-line"><input type="checkbox" name="workingDay" value="2" />Wt</label>
+                  <label class="checkbox-line"><input type="checkbox" name="workingDay" value="3" />Sr</label>
+                  <label class="checkbox-line"><input type="checkbox" name="workingDay" value="4" />Czw</label>
+                  <label class="checkbox-line"><input type="checkbox" name="workingDay" value="5" />Pt</label>
+                  <label class="checkbox-line"><input type="checkbox" name="workingDay" value="6" />Sob</label>
+                  <label class="checkbox-line"><input type="checkbox" name="workingDay" value="0" />Ndz</label>
+                </div>
+              </label>
+              <button class="full" type="submit">Zapisz ustawienia</button>
+            </form>
+          </div>
+
+          <div class="card">
+            <h2>Obsada i zmiany na stanowiskach</h2>
+            <div class="inline-controls">
+              <button type="button" id="addStationRowBtn">Dodaj stanowisko</button>
+              <button type="button" id="saveStationSettingsBtn">Zapisz stanowiska</button>
+            </div>
+            <p>Kolejnosc ustawisz przyciskami "W gore" i "W dol", potem kliknij "Zapisz stanowiska".</p>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>ID</th>
+                    <th>Stanowisko</th>
+                    <th>Dzial</th>
+                    <th>Aktywne</th>
+                    <th>Liczba zmian (1-3)</th>
+                    <th>Liczba osob</th>
+                    <th>Akcja</th>
+                  </tr>
+                </thead>
+                <tbody id="stationSettingsTableBody"></tbody>
+              </table>
+            </div>
+          </div>
+
+          <div class="card">
+            <h2>Powiazanie dzialow z materialami</h2>
+            <p>Zaznaczenie oznacza: ten material blokuje planowanie dzialu, jesli jest "Do zamowienia" i brak daty.</p>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Material</th>
+                    <th>Maszynownia</th>
+                    <th>Lakiernia</th>
+                    <th>Kompletacja</th>
+                    <th>Kosmetyka</th>
+                  </tr>
+                </thead>
+                <tbody id="materialRulesTableBody"></tbody>
+              </table>
+            </div>
+            <button type="button" id="saveMaterialRulesBtn">Zapisz mapowanie materialow</button>
+          </div>
+
+          <div class="card">
+            <h2>Technologie i procenty stanowisk</h2>
+            <div class="inline-controls">
+              <label>
+                Technologia
+                <select id="technologyEditorSelect"></select>
+              </label>
+              <label>
+                Proces
+                <select id="processEditorSelect">
+                  <option value="machining">Maszynownia</option>
+                  <option value="painting">Lakiernia</option>
+                  <option value="assembly">Kompletacja</option>
+                </select>
+              </label>
+              <button type="button" id="addTechnologyBtn">Dodaj technologie</button>
+              <button type="button" id="saveTechnologyAllocationBtn">Zapisz procenty</button>
+            </div>
+
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Stanowisko</th>
+                    <th>Dzial</th>
+                    <th>Procent (%)</th>
+                  </tr>
+                </thead>
+                <tbody id="technologyAllocationTableBody"></tbody>
+              </table>
+            </div>
+            <small>Suma procentow dla procesu powinna wynosic okolo 100%.</small>
+          </div>
+        </section>
+      </section>
+    </main>
+
+    <div id="orderModal" class="modal hidden" aria-hidden="true">
+      <div class="modal-backdrop" data-close-modal="orderModal"></div>
+      <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="orderModalTitle">
+        <div class="inline-controls">
+          <h2 id="orderModalTitle">Nowe zamowienie</h2>
+          <button type="button" data-close-modal="orderModal">Zamknij</button>
+        </div>
+        <form id="orderForm" class="form-grid">
+          <label>
+            Numer zamowienia
+            <input name="orderNumber" required />
+          </label>
+          <label>
+            Data wejscia
+            <input type="date" name="entryDate" required />
+          </label>
+          <label>
+            Planowana data produkcji
+            <input
+              type="text"
+              name="plannedProductionDatePreview"
+              value="Wyliczana automatycznie po dodaniu pozycji"
+              readonly
+            />
+          </label>
+          <label>
+            Status startowy zamowienia
+            <select name="orderStatus" id="orderStatusCreateSelect"></select>
+          </label>
+          <label>
+            Opracowuje
+            <input name="owner" required />
+          </label>
+          <label>
+            Klient
+            <input name="client" required />
+          </label>
+          <label>
+            Kolor
+            <input name="color" />
+          </label>
+          <label>
+            Ilosc ram
+            <input type="number" min="0" name="framesCount" value="0" readonly />
+          </label>
+          <label>
+            Ilosc skrzydel
+            <input type="number" min="0" name="sashesCount" value="0" readonly />
+          </label>
+          <label class="full">
+            Uwagi
+            <textarea name="extras" rows="2" placeholder="Uwagi do planowania / produkcji"></textarea>
+          </label>
+          <button class="full" type="button" id="saveOrderBtn">Utworz zamowienie</button>
+        </form>
+      </div>
+    </div>
+
+    <div id="orderDetailsModal" class="modal hidden" aria-hidden="true">
+      <div class="modal-backdrop" data-close-modal="orderDetailsModal"></div>
+      <div class="modal-card modal-card-order-details" role="dialog" aria-modal="true" aria-labelledby="orderDetailsTitle">
+        <div class="inline-controls">
+          <h2 id="orderDetailsTitle">Szczegoly zamowienia</h2>
+          <div class="inline-controls">
+            <button type="button" id="editSelectedOrderBtn">Edycja</button>
+            <button type="button" id="saveSelectedOrderBtn" disabled>Zapisz</button>
+            <button type="button" id="openPositionModalBtn">Dodaj pozycje</button>
+            <button type="button" data-close-modal="orderDetailsModal">Zamknij</button>
+          </div>
+        </div>
+
+        <form id="selectedOrderForm" class="form-grid">
+          <label>
+            Numer zamowienia
+            <input id="selectedOrderNumberInput" required />
+          </label>
+          <label>
+            Data wejscia
+            <input id="selectedOrderEntryDateInput" type="date" required />
+          </label>
+          <label>
+            Planowana data produkcji (w trybie Edycja = reczne nadpisanie)
+            <input id="selectedOrderPlannedDateInput" type="date" />
+          </label>
+          <label>
+            Status zamowienia (automatycznie z pozycji)
+            <select id="selectedOrderStatusSelect"></select>
+          </label>
+          <label>
+            Opracowuje
+            <input id="selectedOrderOwnerInput" required />
+          </label>
+          <label>
+            Klient
+            <input id="selectedOrderClientInput" required />
+          </label>
+          <label>
+            Kolor
+            <input id="selectedOrderColorInput" />
+          </label>
+          <label>
+            Ilosc ram
+            <input id="selectedOrderFramesInput" type="number" min="0" />
+          </label>
+          <label>
+            Ilosc skrzydel
+            <input id="selectedOrderSashesInput" type="number" min="0" />
+          </label>
+          <label class="full">
+            Uwagi
+            <textarea id="selectedOrderExtrasInput" rows="2" placeholder="Uwagi do planowania / produkcji"></textarea>
+          </label>
+        </form>
+
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Pozycja</th>
+                <th>Wymiary</th>
+                <th>Ramy / skrzydla</th>
+                <th>Ksztalt</th>
+                <th>Elementy</th>
+                <th>Technologia</th>
+                <th>Czas M/L/K (min)</th>
+                <th>Status pozycji</th>
+                <th>Materialy</th>
+                <th>Uwagi</th>
+                <th>Zalacznik</th>
+                <th>Akcja</th>
+              </tr>
+            </thead>
+            <tbody id="selectedOrderPositionsBody"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <div id="positionModal" class="modal hidden" aria-hidden="true">
+      <div class="modal-backdrop" data-close-modal="positionModal"></div>
+      <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="positionModalTitle">
+        <div class="inline-controls">
+          <h2 id="positionModalTitle">Nowa pozycja</h2>
+          <button type="button" data-close-modal="positionModal">Zamknij</button>
+        </div>
+        <form id="positionForm" class="form-grid">
+          <label>
+            Numer pozycji
+            <input name="positionNumber" required />
+          </label>
+          <label>
+            Szerokosc (mm)
+            <input type="number" min="1" name="width" required />
+          </label>
+          <label>
+            Wysokosc (mm)
+            <input type="number" min="1" name="height" required />
+          </label>
+          <label>
+            Technologia
+            <select name="technology" id="technologySelect"></select>
+          </label>
+          <label>
+            Linia
+            <input name="line" placeholder="np. L1" required />
+          </label>
+          <label>
+            Ilosc ram (pozycja)
+            <input type="number" min="0" step="1" name="positionFramesCount" value="1" required />
+          </label>
+          <label>
+            Ilosc skrzydel (pozycja)
+            <input type="number" min="0" step="1" name="positionSashesCount" value="1" required />
+          </label>
+          <label class="full">
+            Ksztalt pozycji
+            <div class="shape-options">
+              <label class="checkbox-line"><input type="checkbox" name="shapeRect" checked />Prostokat</label>
+              <label class="checkbox-line"><input type="checkbox" name="shapeSkos" />Skos</label>
+              <label class="checkbox-line"><input type="checkbox" name="shapeLuk" />Luk</label>
+            </div>
+          </label>
+          <label>
+            Slemie (szt.)
+            <input type="number" min="0" step="1" name="slemieCount" value="0" />
+          </label>
+          <label>
+            Slupek staly (szt.)
+            <input type="number" min="0" step="1" name="slupekStalyCount" value="0" />
+          </label>
+          <label>
+            Przymyk (szt.)
+            <input type="number" min="0" step="1" name="przymykCount" value="0" />
+          </label>
+          <label>
+            Niski prog (szt.)
+            <input type="number" min="0" step="1" name="niskiProgCount" value="0" />
+          </label>
+          <label>
+            Czas maszynownia (min)
+            <input type="number" min="0" step="1" name="machiningTime" required />
+          </label>
+          <label>
+            Czas lakiernia (min)
+            <input type="number" min="0" step="1" name="paintingTime" required />
+          </label>
+          <label>
+            Czas kompletacja (min)
+            <input type="number" min="0" step="1" name="assemblyTime" required />
+          </label>
+
+          <label>
+            Material: drewno (data)
+            <input type="date" name="materialWoodDate" />
+          </label>
+          <label class="checkbox-line">
+            <input type="checkbox" name="materialWoodToOrder" />
+            Do zamowienia
+          </label>
+
+          <label>
+            Material: korpusy (data)
+            <input type="date" name="materialCorpusDate" />
+          </label>
+          <label class="checkbox-line">
+            <input type="checkbox" name="materialCorpusToOrder" />
+            Do zamowienia
+          </label>
+
+          <label>
+            Material: szyby (data)
+            <input type="date" name="materialGlassDate" />
+          </label>
+          <label class="checkbox-line">
+            <input type="checkbox" name="materialGlassToOrder" />
+            Do zamowienia
+          </label>
+
+          <label>
+            Material: okucia (data)
+            <input type="date" name="materialHardwareDate" />
+          </label>
+          <label class="checkbox-line">
+            <input type="checkbox" name="materialHardwareToOrder" />
+            Do zamowienia
+          </label>
+
+          <label>
+            Material: akcesoria (data)
+            <input type="date" name="materialAccessoriesDate" />
+          </label>
+          <label class="checkbox-line">
+            <input type="checkbox" name="materialAccessoriesToOrder" />
+            Do zamowienia
+          </label>
+
+          <label class="full">
+            Uwagi do pozycji
+            <textarea name="notes" rows="2"></textarea>
+          </label>
+          <label class="full">
+            Zalacznik
+            <input type="file" name="attachment" />
+            <small id="positionAttachmentHint"></small>
+          </label>
+
+          <button class="full" type="button" id="savePositionBtn">Dodaj pozycje</button>
+        </form>
+      </div>
+    </div>
+
+    <template id="feedbackItemTemplate">
+      <div class="feedback-item" data-feedback-position-row="1">
+        <input type="checkbox" data-feedback-position-id="" />
+        <div class="feedback-main">
+          <span class="tag"></span>
+          <span class="meta"></span>
+          <div class="feedback-inline-editor">
+            <label>
+              Dzial
+              <select data-feedback-field="department"></select>
+            </label>
+            <label>
+              Status
+              <select data-feedback-field="workflow">
+                <option value="pending">Planowana</option>
+                <option value="in_progress">W toku</option>
+                <option value="done">Zakonczona</option>
+              </select>
+            </label>
+            <label>
+              % realizacji
+              <input data-feedback-field="progress" type="number" min="0" max="100" step="1" />
+            </label>
+            <button type="button" data-action="save-feedback-position">Zapisz</button>
+          </div>
+          <div class="feedback-quick-editor">
+            <div class="feedback-quick-row">
+              <button type="button" class="feedback-chip" data-action="quick-feedback-status" data-value="pending">Plan</button>
+              <button type="button" class="feedback-chip" data-action="quick-feedback-status" data-value="in_progress">W toku</button>
+              <button type="button" class="feedback-chip" data-action="quick-feedback-status" data-value="done">Koniec</button>
+            </div>
+            <div class="feedback-quick-row">
+              <button type="button" class="feedback-chip" data-action="quick-feedback-progress-step" data-step="-10">-10%</button>
+              <button type="button" class="feedback-chip" data-action="quick-feedback-progress" data-value="0">0%</button>
+              <button type="button" class="feedback-chip" data-action="quick-feedback-progress" data-value="50">50%</button>
+              <button type="button" class="feedback-chip" data-action="quick-feedback-progress" data-value="100">100%</button>
+              <button type="button" class="feedback-chip" data-action="quick-feedback-progress-step" data-step="10">+10%</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </template>
+
+    <script src="./app.js"></script>
+  </body>
+</html>
