@@ -2701,16 +2701,26 @@ function renderSelectedOrderDetails() {
         return `${material.label}: ${materialStateLabel(entry)}`;
       }).join("<br>");
 
+      const attachmentMarker = position.attachmentName
+        ? '<span class="attachment-flag attachment-flag--has" title="Pozycja ma zalacznik">ZAL</span>'
+        : '<span class="attachment-flag attachment-flag--none" title="Brak zalacznika">BRAK</span>';
+
       const attachment = position.attachmentName
-        ? `<div class="position-attachment-actions">
-            <button type="button" data-action="open-attachment" data-position-id="${position.id}" data-file-name="${escapeHtml(
+        ? `<div class="position-attachment-cell">
+            ${attachmentMarker}
+            <div class="position-attachment-actions">
+              <button type="button" data-action="open-attachment" data-position-id="${position.id}" data-file-name="${escapeHtml(
             position.attachmentName,
           )}">Otworz</button>
-            <button type="button" data-action="upload-attachment" data-position-id="${position.id}">Zmien</button>
-            <button type="button" class="ghost-btn" data-action="delete-attachment" data-position-id="${position.id}">Usun</button>
+              <button type="button" data-action="upload-attachment" data-position-id="${position.id}">Zmien</button>
+              <button type="button" class="ghost-btn" data-action="delete-attachment" data-position-id="${position.id}">Usun</button>
+            </div>
           </div>`
-        : `<div class="position-attachment-actions">
-            <button type="button" data-action="upload-attachment" data-position-id="${position.id}">Dodaj</button>
+        : `<div class="position-attachment-cell">
+            ${attachmentMarker}
+            <div class="position-attachment-actions">
+              <button type="button" data-action="upload-attachment" data-position-id="${position.id}">Dodaj</button>
+            </div>
           </div>`;
 
       return `
