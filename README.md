@@ -17,6 +17,9 @@ Webowa aplikacja do planowania produkcji okien/drzwi oparta o:
 - Statusy zamowien: Dokumentacja, Produkcja, Kosmetyka, Zakonczone.
 - Status pozycji: aktualny dzial, aktualizowany recznie i masowo.
 - Szczegoly zamowienia po kliknieciu wiersza + uwagi i zalacznik pozycji.
+- Import zamowien i pozycji z pliku Excel (`.xlsx`) z poziomu sekcji `Zamowienia`.
+- Wzorzec importu: `templates/import_zamowien_wzorzec.xlsx`.
+- Ustawienia: zarzadzanie wieloma bazami danych (dodawanie pustych baz i przelaczanie aktywnej bazy; tylko admin).
 - KPI z drill-down po kliknieciu kafelka (statusy/dzialy/materialy do zamowienia).
 - Kokpit: ikona szybkiego dodawania zamowienia (okienko modalne) z kafelkiem przejscia do dodawania pozycji.
 - Gantt dzienny zamowien + wejscie w zamowienie i podglad Gantta dla stanowisk.
@@ -74,4 +77,5 @@ Jesli inni maja wejsc z innych komputerow w sieci lokalnej, otwieraja:
 ## Dane
 
 - Baza: `planner.db` (SQLite) tworzona automatycznie.
+- Warianty baz: katalog `variants/` (tworzone z panelu `Ustawienia`).
 - Procenty technologii i wszystkie zamowienia sa zapisywane centralnie po stronie serwera.

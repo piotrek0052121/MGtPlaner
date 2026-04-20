@@ -50,6 +50,8 @@ const state = {
   stationSettings: {},
   technologies: {},
   materialRules: {},
+  databases: [],
+  activeDatabaseKey: "default",
 };
 
 const ui = {
@@ -94,6 +96,9 @@ const el = {
   positionModal: document.querySelector("#positionModal"),
   positionModalTitle: document.querySelector("#positionModalTitle"),
   positionAttachmentHint: document.querySelector("#positionAttachmentHint"),
+  openCurrentAttachmentBtn: document.querySelector("#openCurrentAttachmentBtn"),
+  clearAttachmentWrap: document.querySelector("#clearAttachmentWrap"),
+  clearAttachmentCheckbox: document.querySelector('input[name="clearAttachment"]'),
   orderForm: document.querySelector("#orderForm"),
   saveOrderBtn: document.querySelector("#saveOrderBtn"),
   orderStatusCreateSelect: document.querySelector("#orderStatusCreateSelect"),
@@ -106,6 +111,9 @@ const el = {
   ordersPositionSearchInput: document.querySelector("#ordersPositionSearchInput"),
   ordersStatusFilter: document.querySelector("#ordersStatusFilter"),
   ordersWeekFilterInput: document.querySelector("#ordersWeekFilterInput"),
+  ordersImportFileInput: document.querySelector("#ordersImportFileInput"),
+  importOrdersBtn: document.querySelector("#importOrdersBtn"),
+  ordersImportResult: document.querySelector("#ordersImportResult"),
   selectCompletedOrdersBtn: document.querySelector("#selectCompletedOrdersBtn"),
   clearOrdersFiltersBtn: document.querySelector("#clearOrdersFiltersBtn"),
   archiveCompletedOrdersBtn: document.querySelector("#archiveCompletedOrdersBtn"),
@@ -177,6 +185,12 @@ const el = {
   userPermissionsGrid: document.querySelector("#userPermissionsGrid"),
   usersList: document.querySelector("#usersList"),
   settingsForm: document.querySelector("#settingsForm"),
+  databaseSelect: document.querySelector("#databaseSelect"),
+  switchDatabaseBtn: document.querySelector("#switchDatabaseBtn"),
+  newDatabaseNameInput: document.querySelector("#newDatabaseNameInput"),
+  createDatabaseBtn: document.querySelector("#createDatabaseBtn"),
+  databaseStatusText: document.querySelector("#databaseStatusText"),
+  databaseAdminHint: document.querySelector("#databaseAdminHint"),
   stationSettingsTableBody: document.querySelector("#stationSettingsTableBody"),
   addStationRowBtn: document.querySelector("#addStationRowBtn"),
   saveStationSettingsBtn: document.querySelector("#saveStationSettingsBtn"),
@@ -231,8 +245,14 @@ function bindActions() {
   if (el.openOrderModalBtn) {
     el.openOrderModalBtn.addEventListener("click", () => openModal("orderModal"));
   }
+  if (el.importOrdersBtn) {
+    el.importOrdersBtn.addEventListener("click", () => safeAction(importOrdersFromExcel));
+  }
   if (el.openPositionModalBtn) {
     el.openPositionModalBtn.addEventListener("click", () => openPositionModalForSelectedOrder());
+  }
+  if (el.openCurrentAttachmentBtn) {
+    el.openCurrentAttachmentBtn.addEventListener("click", () => safeAction(openCurrentEditingAttachment));
   }
   document.addEventListener("click", (event) => {
     const closeBtn = event.target.closest("[data-close-modal]");
@@ -315,6 +335,8 @@ function bindActions() {
     event.preventDefault();
     safeAction(saveSettings);
   });
+  el.switchDatabaseBtn?.addEventListener("click", () => safeAction(switchActiveDatabase));
+  el.createDatabaseBtn?.addEventListener("click", () => safeAction(createDatabaseVariant));
   el.addStationRowBtn.addEventListener("click", addStationEditorRow);
   el.saveStationSettingsBtn.addEventListener("click", () => safeAction(saveStationSettings));
   el.stationSettingsTableBody.addEventListener("click", onStationSettingsTableClick);
@@ -429,6 +451,12 @@ function openPositionModalForEdit(positionId) {
       ? `Aktualny zalacznik: ${position.attachmentName} (zostaw puste, aby nie zmieniac)`
       : "Brak zalacznika";
   }
+  if (el.clearAttachmentWrap) {
+    el.clearAttachmentWrap.classList.toggle("panel-hidden", !position.attachmentName);
+  }
+  if (el.openCurrentAttachmentBtn) {
+    el.openCurrentAttachmentBtn.classList.toggle("panel-hidden", !position.attachmentName);
+  }
   openModal("positionModal");
 }
 
@@ -465,6 +493,15 @@ function resetPositionFormState() {
   }
   if (el.positionAttachmentHint) {
     el.positionAttachmentHint.textContent = "";
+  }
+  if (el.clearAttachmentCheckbox) {
+    el.clearAttachmentCheckbox.checked = false;
+  }
+  if (el.clearAttachmentWrap) {
+    el.clearAttachmentWrap.classList.add("panel-hidden");
+  }
+  if (el.openCurrentAttachmentBtn) {
+    el.openCurrentAttachmentBtn.classList.add("panel-hidden");
   }
 }
 
@@ -620,6 +657,8 @@ function resetLocalSessionState() {
   state.stationSettings = {};
   state.technologies = {};
   state.materialRules = {};
+  state.databases = [];
+  state.activeDatabaseKey = "default";
   if (el.loginInput) {
     el.loginInput.value = "";
   }
@@ -672,6 +711,32 @@ async function createOrder() {
   await reloadAndRender();
 }
 
+async function importOrdersFromExcel() {
+  const file = el.ordersImportFileInput?.files?.[0];
+  if (!file) {
+    throw new Error("Wybierz plik .xlsx do importu.");
+  }
+  const formData = new FormData();
+  formData.append("file", file, file.name || "import.xlsx");
+  const payload = await apiForm("/api/orders/import-excel", formData);
+  const summary = payload.summary || {};
+  const message = `Import zakonczony. Zamowienia +${toInt(summary.createdOrders)} / zaktualizowane ${toInt(
+    summary.updatedOrders,
+  )}, pozycje +${toInt(summary.createdPositions)} / zaktualizowane ${toInt(summary.updatedPositions)}, pominiete wiersze: ${toInt(
+    summary.skippedRows,
+  )}.`;
+  if (el.ordersImportResult) {
+    const errorCount = toInt(summary.errorCount);
+    const firstError = Array.isArray(summary.errors) && summary.errors.length > 0 ? ` Pierwszy blad: ${summary.errors[0]}` : "";
+    el.ordersImportResult.textContent = `${message}${errorCount > 0 ? ` Bledy: ${errorCount}.` : ""}${firstError}`;
+  }
+  alert(message + (toInt(summary.errorCount) > 0 ? `\nBledy: ${toInt(summary.errorCount)} (szczegoly pod formularzem).` : ""));
+  if (el.ordersImportFileInput) {
+    el.ordersImportFileInput.value = "";
+  }
+  await reloadAndRender();
+}
+
 async function createPosition() {
   if (!el.positionForm.reportValidity()) {
     return;
@@ -683,6 +748,7 @@ async function createPosition() {
   }
   const fd = new FormData(el.positionForm);
   const attachmentFile = fd.get("attachment");
+  const clearAttachment = toBoolean(fd.get("clearAttachment"));
   let attachment;
   if (attachmentFile instanceof File && attachmentFile.size > 0) {
     attachment = {
@@ -741,6 +807,8 @@ async function createPosition() {
   }
   if (attachment) {
     payload.attachment = attachment;
+  } else if (ui.editingPositionId && clearAttachment) {
+    payload.clearAttachment = true;
   }
 
   if (ui.editingPositionId) {
@@ -916,6 +984,55 @@ async function saveSettings() {
   await reloadAndRender();
 }
 
+async function createDatabaseVariant() {
+  if (!isAdminUser()) {
+    throw new Error("Tylko administrator moze dodawac nowe bazy.");
+  }
+  const name = String(el.newDatabaseNameInput?.value || "").trim();
+  if (!name) {
+    throw new Error("Podaj nazwe nowej bazy.");
+  }
+  const payload = await api("/api/databases", {
+    method: "POST",
+    body: { name, activate: false },
+  });
+  state.databases = Array.isArray(payload.databases) ? payload.databases : [];
+  state.activeDatabaseKey = String(payload.activeDatabase || state.activeDatabaseKey || "default");
+  if (el.newDatabaseNameInput) {
+    el.newDatabaseNameInput.value = "";
+  }
+  if (el.databaseStatusText) {
+    el.databaseStatusText.textContent = "Nowa baza zostala utworzona.";
+  }
+  renderDatabaseManager();
+}
+
+async function switchActiveDatabase() {
+  if (!isAdminUser()) {
+    throw new Error("Tylko administrator moze przelaczac bazy.");
+  }
+  const key = String(el.databaseSelect?.value || "").trim();
+  if (!key) {
+    throw new Error("Wybierz baze do przelaczenia.");
+  }
+  const payload = await api("/api/databases/active", {
+    method: "PUT",
+    body: { key },
+  });
+  state.databases = Array.isArray(payload.databases) ? payload.databases : [];
+  state.activeDatabaseKey = String(payload.activeDatabase || key);
+  if (el.databaseStatusText) {
+    el.databaseStatusText.textContent = "Baza zostala przelaczona.";
+  }
+  if (payload.requiresRelogin) {
+    resetLocalSessionState();
+    renderAll();
+    alert("Przelaczono baze. Ta sesja nie istnieje w nowej bazie - zaloguj sie ponownie.");
+    return;
+  }
+  await reloadAndRender();
+}
+
 async function saveCalendarDayWorking(date, working) {
   await api("/api/settings/calendar-day", {
     method: "PUT",
@@ -1064,10 +1181,29 @@ async function saveSelectedOrder() {
   await reloadAndRender();
 }
 
+async function openCurrentEditingAttachment() {
+  if (!ui.selectedOrderId || !ui.editingPositionId) {
+    return;
+  }
+  const order = state.orders.find((item) => item.id === ui.selectedOrderId);
+  const position = order?.positions?.find((item) => item.id === ui.editingPositionId);
+  if (!position?.attachmentName) {
+    throw new Error("Ta pozycja nie ma zalacznika.");
+  }
+  await openPositionAttachment(position.id, position.attachmentName);
+}
+
 async function openPositionAttachment(positionId, fileName) {
-  const response = await fetch(`/api/positions/${encodeURIComponent(positionId)}/attachment`);
+  const response = await fetch(`/api/positions/${encodeURIComponent(positionId)}/attachment`, {
+    method: "GET",
+    credentials: "same-origin",
+  });
   if (!response.ok) {
     const payload = await response.json().catch(() => ({}));
+    if (response.status === 401 && isLoggedIn()) {
+      resetLocalSessionState();
+      renderAll();
+    }
     throw new Error(payload.error || "Nie mozna otworzyc zalacznika.");
   }
   const blob = await response.blob();
@@ -1726,6 +1862,8 @@ async function reloadState() {
   state.stationSettings = data.stationSettings || {};
   state.technologies = data.technologies || {};
   state.materialRules = normalizeMaterialRules(data.materialRules || {});
+  state.databases = Array.isArray(data.databases) ? data.databases : [];
+  state.activeDatabaseKey = String(data.activeDatabase || "default");
   recalculateOrders();
 }
 
@@ -2124,6 +2262,7 @@ function renderAll() {
   renderExecution();
   renderFeedbackPositions();
   renderUsers();
+  renderDatabaseManager();
   syncSettingsForm();
   renderStationSettingsEditor();
   renderMaterialRulesEditor();
@@ -3813,6 +3952,38 @@ function syncUserPermissionsEnabledState() {
   });
 }
 
+function renderDatabaseManager() {
+  if (!el.databaseSelect || !el.switchDatabaseBtn || !el.createDatabaseBtn || !el.newDatabaseNameInput) {
+    return;
+  }
+  const admin = isAdminUser();
+  if (el.databaseAdminHint) {
+    el.databaseAdminHint.classList.toggle("panel-hidden", admin);
+  }
+
+  const databaseItems = Array.isArray(state.databases) && state.databases.length > 0 ? state.databases : [];
+  const fallback = [{ key: "default", name: "Domyslna baza", fileName: "planner.db", active: true, variant: false }];
+  const source = databaseItems.length > 0 ? databaseItems : fallback;
+  el.databaseSelect.innerHTML = source
+    .map((item) => {
+      const key = String(item.key || "");
+      const activeBadge = key === state.activeDatabaseKey ? " (aktywna)" : "";
+      const label = `${item.name || key}${activeBadge} - ${item.fileName || ""}`;
+      return `<option value="${escapeHtml(key)}">${escapeHtml(label)}</option>`;
+    })
+    .join("");
+  const valid = source.some((item) => String(item.key || "") === state.activeDatabaseKey);
+  el.databaseSelect.value = valid ? state.activeDatabaseKey : String(source[0]?.key || "default");
+
+  el.databaseSelect.disabled = !admin;
+  el.switchDatabaseBtn.disabled = !admin;
+  el.newDatabaseNameInput.disabled = !admin;
+  el.createDatabaseBtn.disabled = !admin;
+  if (el.databaseStatusText && !admin) {
+    el.databaseStatusText.textContent = "Tryb tylko do odczytu. Zarzadzanie bazami jest dostepne dla admina.";
+  }
+}
+
 function syncSettingsForm() {
   el.settingsForm.minutesPerShift.value = state.settings.minutesPerShift;
   Array.from(el.settingsForm.querySelectorAll('input[name="workingDay"]')).forEach((input) => {
@@ -4628,6 +4799,25 @@ async function api(path, options = {}) {
   if (options.body) {
     requestOptions.body = JSON.stringify(options.body);
   }
+  const response = await fetch(path, requestOptions);
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    if (response.status === 401 && isLoggedIn()) {
+      resetLocalSessionState();
+      renderAll();
+    }
+    throw new Error(payload.error || `Blad API (${response.status})`);
+  }
+  return payload;
+}
+
+async function apiForm(path, formData, options = {}) {
+  const requestOptions = {
+    method: options.method || "POST",
+    body: formData,
+    credentials: "same-origin",
+    headers: options.headers || {},
+  };
   const response = await fetch(path, requestOptions);
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) {

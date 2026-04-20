@@ -2,17 +2,34 @@ import base64
 import hashlib
 import json
 import os
+import re
 import sqlite3
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
+from urllib.parse import quote
 
 from flask import Flask, Response, g, jsonify, request, session
 
+try:
+    from openpyxl import load_workbook
+except Exception:  # pragma: no cover - runtime safeguard when dependency is missing
+    load_workbook = None
+
 BASE_DIR = Path(__file__).resolve().parent
-DB_PATH = Path(os.getenv("PLANNER_DB_PATH", str(BASE_DIR / "planner.db")))
-if not DB_PATH.is_absolute():
-    DB_PATH = (BASE_DIR / DB_PATH).resolve()
+BASE_DB_PATH = Path(os.getenv("PLANNER_DB_PATH", str(BASE_DIR / "planner.db")))
+if not BASE_DB_PATH.is_absolute():
+    BASE_DB_PATH = (BASE_DIR / BASE_DB_PATH).resolve()
+
+DB_VARIANTS_DIR = Path(os.getenv("PLANNER_DB_VARIANTS_DIR", str(BASE_DB_PATH.parent / "variants")))
+if not DB_VARIANTS_DIR.is_absolute():
+    DB_VARIANTS_DIR = (BASE_DIR / DB_VARIANTS_DIR).resolve()
+
+ACTIVE_DB_KEY_PATH = Path(os.getenv("PLANNER_ACTIVE_DB_FILE", str(BASE_DB_PATH.parent / ".active_db_key")))
+if not ACTIVE_DB_KEY_PATH.is_absolute():
+    ACTIVE_DB_KEY_PATH = (BASE_DIR / ACTIVE_DB_KEY_PATH).resolve()
+
+DEFAULT_DB_KEY = "default"
 
 app = Flask(__name__, static_folder=str(BASE_DIR), static_url_path="")
 app.config["SECRET_KEY"] = os.getenv("APP_SECRET_KEY", "dev-only-change-me")
@@ -117,11 +134,91 @@ DEFAULT_TECHNOLOGIES = {
 }
 
 
-def db():
-    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(DB_PATH)
+def sanitize_variant_slug(value):
+    cleaned = re.sub(r"[^a-z0-9_-]+", "-", str(value or "").strip().lower()).strip("-_")
+    return cleaned
+
+
+def database_key_to_path(key):
+    normalized = str(key or "").strip()
+    if normalized == DEFAULT_DB_KEY:
+        return BASE_DB_PATH
+    if normalized.startswith("variant:"):
+        slug = sanitize_variant_slug(normalized.split(":", 1)[1])
+        if not slug:
+            return None
+        return DB_VARIANTS_DIR / f"{slug}.db"
+    return None
+
+
+def ensure_database_storage():
+    BASE_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    DB_VARIANTS_DIR.mkdir(parents=True, exist_ok=True)
+    ACTIVE_DB_KEY_PATH.parent.mkdir(parents=True, exist_ok=True)
+
+
+def get_active_database_key():
+    ensure_database_storage()
+    if ACTIVE_DB_KEY_PATH.exists():
+        raw = ACTIVE_DB_KEY_PATH.read_text(encoding="utf-8").strip()
+        path = database_key_to_path(raw)
+        if path and path.exists():
+            return raw
+    return DEFAULT_DB_KEY
+
+
+def set_active_database_key(key):
+    ensure_database_storage()
+    path = database_key_to_path(key)
+    if not path or not path.exists():
+        raise ValueError("Nie znaleziono wskazanej bazy danych.")
+    ACTIVE_DB_KEY_PATH.write_text(str(key), encoding="utf-8")
+
+
+def get_current_database_path():
+    key = get_active_database_key()
+    path = database_key_to_path(key)
+    if not path:
+        return BASE_DB_PATH
+    return path
+
+
+def list_database_catalog():
+    ensure_database_storage()
+    active_key = get_active_database_key()
+    output = [
+        {
+            "key": DEFAULT_DB_KEY,
+            "name": "Domyslna baza",
+            "fileName": BASE_DB_PATH.name,
+            "active": active_key == DEFAULT_DB_KEY,
+            "variant": False,
+        }
+    ]
+    for file_path in sorted(DB_VARIANTS_DIR.glob("*.db"), key=lambda item: item.name.lower()):
+        key = f"variant:{file_path.stem}"
+        output.append(
+            {
+                "key": key,
+                "name": file_path.stem,
+                "fileName": file_path.name,
+                "active": active_key == key,
+                "variant": True,
+            }
+        )
+    return output
+
+
+def db_connect(path):
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(path)
     conn.row_factory = sqlite3.Row
     return conn
+
+
+def db():
+    return db_connect(get_current_database_path())
 
 
 def now_iso():
@@ -374,8 +471,8 @@ def default_technology_allocations():
     return output
 
 
-def initialize():
-    connection = db()
+def initialize(target_db_path=None):
+    connection = db_connect(target_db_path or get_current_database_path())
 
     connection.execute(
         """
@@ -931,6 +1028,461 @@ def get_orders(connection):
     return output
 
 
+def normalize_excel_header(value):
+    return re.sub(r"[^a-z0-9]+", "", str(value or "").strip().lower())
+
+
+def parse_excel_sheet_rows(sheet):
+    if sheet is None:
+        return []
+    rows_iter = sheet.iter_rows(values_only=True)
+    try:
+        header_row = next(rows_iter)
+    except StopIteration:
+        return []
+    headers = [normalize_excel_header(item) for item in header_row]
+    output = []
+    for row_index, row in enumerate(rows_iter, start=2):
+        if row is None:
+            continue
+        if all(value is None or str(value).strip() == "" for value in row):
+            continue
+        item = {"_rowNumber": row_index}
+        for col_index, header in enumerate(headers):
+            if not header:
+                continue
+            item[header] = row[col_index] if col_index < len(row) else None
+        output.append(item)
+    return output
+
+
+def find_excel_sheet(workbook, aliases):
+    if not workbook:
+        return None
+    normalized = {normalize_excel_header(name): workbook[name] for name in workbook.sheetnames}
+    for alias in aliases:
+        found = normalized.get(normalize_excel_header(alias))
+        if found:
+            return found
+    return None
+
+
+def excel_text(value):
+    if value is None:
+        return ""
+    return str(value).strip()
+
+
+def excel_date_to_iso(value):
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value.date().isoformat()
+    if isinstance(value, date):
+        return value.isoformat()
+    text = str(value).strip()
+    if not text:
+        return None
+    for fmt in ("%Y-%m-%d", "%d.%m.%Y", "%d-%m-%Y", "%d/%m/%Y"):
+        try:
+            return datetime.strptime(text, fmt).date().isoformat()
+        except ValueError:
+            continue
+    return None
+
+
+def excel_bool(value, fallback=False):
+    if value is None:
+        return bool(fallback)
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    text = str(value).strip().lower()
+    if text in ("1", "true", "tak", "yes", "y", "on", "x"):
+        return True
+    if text in ("0", "false", "nie", "no", "off", ""):
+        return False
+    return bool(fallback)
+
+
+def excel_int(value, fallback=0):
+    try:
+        if value is None or str(value).strip() == "":
+            return int(fallback)
+        return int(float(value))
+    except (TypeError, ValueError):
+        return int(fallback)
+
+
+def excel_float(value, fallback=0.0):
+    try:
+        if value is None or str(value).strip() == "":
+            return float(fallback)
+        return float(value)
+    except (TypeError, ValueError):
+        return float(fallback)
+
+
+def derive_timestamps_for_workflow(workflow_status, existing_started=None, existing_finished=None):
+    status = normalize_workflow_status(workflow_status, "pending")
+    timestamp = now_iso()
+    if status == "done":
+        started = normalize_optional_text(existing_started) or timestamp
+        finished = normalize_optional_text(existing_finished) or timestamp
+        return started, finished
+    if status == "in_progress":
+        started = normalize_optional_text(existing_started) or timestamp
+        return started, None
+    return None, None
+
+
+def upsert_from_excel_workbook(connection, workbook):
+    orders_sheet = find_excel_sheet(workbook, ["Zamowienia", "Orders"])
+    positions_sheet = find_excel_sheet(workbook, ["Pozycje", "Positions"])
+    if not orders_sheet and not positions_sheet:
+        raise ValueError("Brak arkuszy 'Zamowienia' i 'Pozycje' w pliku.")
+
+    order_rows = parse_excel_sheet_rows(orders_sheet) if orders_sheet else []
+    position_rows = parse_excel_sheet_rows(positions_sheet) if positions_sheet else []
+    if not order_rows and not position_rows:
+        raise ValueError("Plik nie zawiera danych do importu.")
+
+    existing_orders_rows = connection.execute(
+        """
+        SELECT id, order_number, entry_date, owner, client, color, extras, order_status, manual_start_date, manual_planned_date
+        FROM orders
+        """
+    ).fetchall()
+    existing_orders_by_number = {row["order_number"]: dict(row) for row in existing_orders_rows}
+
+    created_orders = 0
+    updated_orders = 0
+    created_positions = 0
+    updated_positions = 0
+    skipped_rows = 0
+    errors = []
+    order_id_by_number = {}
+    touched_order_ids = set()
+
+    for row in order_rows:
+        row_no = int(row.get("_rowNumber") or 0)
+        order_number = excel_text(row.get("ordernumber"))
+        if not order_number:
+            skipped_rows += 1
+            errors.append(f"Zamowienia, wiersz {row_no}: brak numeru zamowienia.")
+            continue
+
+        existing = existing_orders_by_number.get(order_number)
+        entry_date = excel_date_to_iso(row.get("entrydate"))
+        owner = excel_text(row.get("owner"))
+        client = excel_text(row.get("client"))
+        color = excel_text(row.get("color"))
+        extras = excel_text(row.get("extras"))
+        order_status_raw = excel_text(row.get("orderstatus"))
+        order_status = normalize_order_status(order_status_raw or (existing.get("order_status") if existing else "Dokumentacja"))
+        manual_start_date = excel_date_to_iso(row.get("manualstartdate"))
+        manual_planned_date = excel_date_to_iso(row.get("manualplanneddate"))
+
+        if existing:
+            entry_date = entry_date or existing.get("entry_date")
+            owner = owner or excel_text(existing.get("owner"))
+            client = client or excel_text(existing.get("client"))
+            color = color if color != "" else excel_text(existing.get("color"))
+            extras = extras if extras != "" else excel_text(existing.get("extras"))
+            manual_start_date = manual_start_date or normalize_optional_date(existing.get("manual_start_date"))
+            manual_planned_date = manual_planned_date or normalize_optional_date(existing.get("manual_planned_date"))
+        else:
+            if not entry_date:
+                skipped_rows += 1
+                errors.append(f"Zamowienia, wiersz {row_no}: brak lub zla data wejscia.")
+                continue
+            if not owner or not client:
+                skipped_rows += 1
+                errors.append(f"Zamowienia, wiersz {row_no}: brak pola opracowuje lub klient.")
+                continue
+
+        if not entry_date or not owner or not client:
+            skipped_rows += 1
+            errors.append(f"Zamowienia, wiersz {row_no}: niekompletne dane po uzupelnieniu.")
+            continue
+
+        if existing:
+            connection.execute(
+                """
+                UPDATE orders
+                SET entry_date = ?, material_date = ?, owner = ?, client = ?, color = ?, extras = ?, order_status = ?,
+                    manual_start_date = ?, manual_planned_date = ?,
+                    completed_at = CASE
+                      WHEN ? = 'Zakonczone' THEN COALESCE(NULLIF(completed_at, ''), DATE('now', 'localtime'))
+                      ELSE NULL
+                    END
+                WHERE id = ?
+                """,
+                (
+                    entry_date,
+                    entry_date,
+                    owner,
+                    client,
+                    color,
+                    extras,
+                    order_status,
+                    manual_start_date,
+                    manual_planned_date,
+                    order_status,
+                    existing["id"],
+                ),
+            )
+            order_id = existing["id"]
+            updated_orders += 1
+        else:
+            order_id = str(uuid.uuid4())
+            connection.execute(
+                """
+                INSERT INTO orders (id, order_number, entry_date, material_date, owner, client, color, frames_count, sashes_count, extras, created_at, order_status, archived, archived_at, completed_at, manual_start_date, manual_planned_date)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    order_id,
+                    order_number,
+                    entry_date,
+                    entry_date,
+                    owner,
+                    client,
+                    color,
+                    0,
+                    0,
+                    extras,
+                    now_iso(),
+                    order_status,
+                    0,
+                    None,
+                    datetime.now().date().isoformat() if order_status == "Zakonczone" else None,
+                    manual_start_date,
+                    manual_planned_date,
+                ),
+            )
+            created_orders += 1
+
+        existing_orders_by_number[order_number] = {
+            "id": order_id,
+            "order_number": order_number,
+            "entry_date": entry_date,
+            "owner": owner,
+            "client": client,
+            "color": color,
+            "extras": extras,
+            "order_status": order_status,
+            "manual_start_date": manual_start_date,
+            "manual_planned_date": manual_planned_date,
+        }
+        order_id_by_number[order_number] = order_id
+        touched_order_ids.add(order_id)
+
+    for order_number, row in existing_orders_by_number.items():
+        order_id_by_number.setdefault(order_number, row["id"])
+
+    if order_id_by_number:
+        placeholders = ",".join("?" for _ in order_id_by_number)
+        existing_position_rows = connection.execute(
+            f"""
+            SELECT id, order_id, position_number, started_at, finished_at
+            FROM order_positions
+            WHERE order_id IN (
+              SELECT id FROM orders WHERE order_number IN ({placeholders})
+            )
+            """,
+            list(order_id_by_number.keys()),
+        ).fetchall()
+    else:
+        existing_position_rows = []
+    existing_positions_by_key = {
+        (row["order_id"], str(row["position_number"]).strip()): dict(row) for row in existing_position_rows
+    }
+
+    for row in position_rows:
+        row_no = int(row.get("_rowNumber") or 0)
+        order_number = excel_text(row.get("ordernumber"))
+        position_number = excel_text(row.get("positionnumber"))
+        technology = excel_text(row.get("technology"))
+        line = excel_text(row.get("line"))
+        width = excel_int(row.get("width"), 0)
+        height = excel_int(row.get("height"), 0)
+        if not order_number or not position_number:
+            skipped_rows += 1
+            errors.append(f"Pozycje, wiersz {row_no}: brak numeru zamowienia lub pozycji.")
+            continue
+        if not technology or not line:
+            skipped_rows += 1
+            errors.append(f"Pozycje, wiersz {row_no}: brak technologii lub linii.")
+            continue
+        if width <= 0 or height <= 0:
+            skipped_rows += 1
+            errors.append(f"Pozycje, wiersz {row_no}: wymiary musza byc > 0.")
+            continue
+        order_id = order_id_by_number.get(order_number)
+        if not order_id:
+            skipped_rows += 1
+            errors.append(f"Pozycje, wiersz {row_no}: nie znaleziono zamowienia '{order_number}'.")
+            continue
+
+        machining = excel_float(row.get("machiningtime"), 0.0)
+        painting = excel_float(row.get("paintingtime"), 0.0)
+        assembly = excel_float(row.get("assemblytime"), 0.0)
+        workflow_status = normalize_workflow_status(excel_text(row.get("workflowstatus")) or "pending", "pending")
+        department_status = normalize_department_status(excel_text(row.get("currentdepartmentstatus")) or "Dokumentacja")
+        progress_percent = normalize_position_progress(workflow_status, parse_progress_percent(row.get("progresspercent")))
+
+        materials = {
+            "wood": (excel_date_to_iso(row.get("materialwooddate")), excel_bool(row.get("materialwoodtoorder"), False)),
+            "corpus": (excel_date_to_iso(row.get("materialcorpusdate")), excel_bool(row.get("materialcorpustoorder"), False)),
+            "glass": (excel_date_to_iso(row.get("materialglassdate")), excel_bool(row.get("materialglasstoorder"), False)),
+            "hardware": (
+                excel_date_to_iso(row.get("materialhardwaredate")),
+                excel_bool(row.get("materialhardwaretoorder"), False),
+            ),
+            "accessories": (
+                excel_date_to_iso(row.get("materialaccessoriesdate")),
+                excel_bool(row.get("materialaccessoriestoorder"), False),
+            ),
+        }
+
+        key = (order_id, position_number)
+        existing_position = existing_positions_by_key.get(key)
+        started_at, finished_at = derive_timestamps_for_workflow(
+            workflow_status,
+            existing_started=existing_position.get("started_at") if existing_position else None,
+            existing_finished=existing_position.get("finished_at") if existing_position else None,
+        )
+
+        if existing_position:
+            connection.execute(
+                """
+                UPDATE order_positions
+                SET
+                  width = ?, height = ?, technology = ?, line = ?,
+                  position_frames_count = ?, position_sashes_count = ?,
+                  shape_rect = ?, shape_skos = ?, shape_luk = ?,
+                  slemie_count = ?, slupek_staly_count = ?, przymyk_count = ?, niski_prog_count = ?,
+                  machining_time = ?, painting_time = ?, assembly_time = ?,
+                  material_wood_date = ?, material_corpus_date = ?, material_glass_date = ?, material_hardware_date = ?, material_accessories_date = ?,
+                  material_wood_to_order = ?, material_corpus_to_order = ?, material_glass_to_order = ?, material_hardware_to_order = ?, material_accessories_to_order = ?,
+                  notes = ?, current_department_status = ?, status = ?, progress_percent = ?, started_at = ?, finished_at = ?
+                WHERE id = ?
+                """,
+                (
+                    width,
+                    height,
+                    technology,
+                    line,
+                    excel_int(row.get("framescount"), 0),
+                    excel_int(row.get("sashescount"), 0),
+                    int(excel_bool(row.get("shaperect"), True)),
+                    int(excel_bool(row.get("shapeskos"), False)),
+                    int(excel_bool(row.get("shapeluk"), False)),
+                    excel_int(row.get("slemiecount"), 0),
+                    excel_int(row.get("slupekstalycount"), 0),
+                    excel_int(row.get("przymykcount"), 0),
+                    excel_int(row.get("niskiprogcount"), 0),
+                    machining,
+                    painting,
+                    assembly,
+                    materials["wood"][0],
+                    materials["corpus"][0],
+                    materials["glass"][0],
+                    materials["hardware"][0],
+                    materials["accessories"][0],
+                    int(materials["wood"][1]),
+                    int(materials["corpus"][1]),
+                    int(materials["glass"][1]),
+                    int(materials["hardware"][1]),
+                    int(materials["accessories"][1]),
+                    excel_text(row.get("notes")),
+                    department_status,
+                    workflow_status,
+                    progress_percent,
+                    started_at,
+                    finished_at,
+                    existing_position["id"],
+                ),
+            )
+            updated_positions += 1
+        else:
+            position_id = str(uuid.uuid4())
+            connection.execute(
+                """
+                INSERT INTO order_positions (
+                  id, order_id, position_number, width, height, technology, line,
+                  position_frames_count, position_sashes_count,
+                  shape_rect, shape_skos, shape_luk,
+                  slemie_count, slupek_staly_count, przymyk_count, niski_prog_count,
+                  machining_time, painting_time, assembly_time,
+                  material_wood_date, material_corpus_date, material_glass_date, material_hardware_date, material_accessories_date,
+                  material_wood_to_order, material_corpus_to_order, material_glass_to_order, material_hardware_to_order, material_accessories_to_order,
+                  notes, current_department_status, attachment_name, attachment_mime, attachment_data,
+                  progress_percent, status, started_at, finished_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    position_id,
+                    order_id,
+                    position_number,
+                    width,
+                    height,
+                    technology,
+                    line,
+                    excel_int(row.get("framescount"), 0),
+                    excel_int(row.get("sashescount"), 0),
+                    int(excel_bool(row.get("shaperect"), True)),
+                    int(excel_bool(row.get("shapeskos"), False)),
+                    int(excel_bool(row.get("shapeluk"), False)),
+                    excel_int(row.get("slemiecount"), 0),
+                    excel_int(row.get("slupekstalycount"), 0),
+                    excel_int(row.get("przymykcount"), 0),
+                    excel_int(row.get("niskiprogcount"), 0),
+                    machining,
+                    painting,
+                    assembly,
+                    materials["wood"][0],
+                    materials["corpus"][0],
+                    materials["glass"][0],
+                    materials["hardware"][0],
+                    materials["accessories"][0],
+                    int(materials["wood"][1]),
+                    int(materials["corpus"][1]),
+                    int(materials["glass"][1]),
+                    int(materials["hardware"][1]),
+                    int(materials["accessories"][1]),
+                    excel_text(row.get("notes")),
+                    department_status,
+                    None,
+                    None,
+                    None,
+                    progress_percent,
+                    workflow_status,
+                    started_at,
+                    finished_at,
+                ),
+            )
+            created_positions += 1
+
+        touched_order_ids.add(order_id)
+
+    if touched_order_ids:
+        sync_order_statuses_for_orders(connection, sorted(touched_order_ids))
+
+    return {
+        "createdOrders": created_orders,
+        "updatedOrders": updated_orders,
+        "createdPositions": created_positions,
+        "updatedPositions": updated_positions,
+        "skippedRows": skipped_rows,
+        "errorCount": len(errors),
+        "errors": errors[:150],
+    }
+
+
 PUBLIC_API_PATHS = {
     "/api/auth/login",
     "/api/auth/logout",
@@ -988,6 +1540,8 @@ def api_bootstrap():
         "stationSettings": get_station_settings(connection),
         "materialRules": get_material_rules(connection),
         "technologies": get_technology_allocations(connection),
+        "databases": list_database_catalog(),
+        "activeDatabase": get_active_database_key(),
     }
     connection.close()
     return jsonify(payload)
@@ -1119,6 +1673,40 @@ def api_create_position(order_id):
     connection.commit()
     connection.close()
     return jsonify({"id": position_id}), 201
+
+
+@app.post("/api/orders/import-excel")
+def api_import_orders_excel():
+    if load_workbook is None:
+        return jsonify({"error": "Brak biblioteki openpyxl. Zainstaluj zaleznosci aplikacji."}), 500
+
+    upload = request.files.get("file")
+    if not upload or not upload.filename:
+        return jsonify({"error": "Wybierz plik Excel do importu."}), 400
+    if not str(upload.filename).lower().endswith(".xlsx"):
+        return jsonify({"error": "Obslugiwany jest tylko format .xlsx."}), 400
+
+    workbook = None
+    connection = None
+    try:
+        workbook = load_workbook(upload.stream, data_only=True)
+        connection = db()
+        summary = upsert_from_excel_workbook(connection, workbook)
+        connection.commit()
+        return jsonify({"ok": True, "summary": summary})
+    except ValueError as exc:
+        if connection:
+            connection.rollback()
+        return jsonify({"error": str(exc)}), 400
+    except Exception as exc:  # pragma: no cover - defensive runtime guard
+        if connection:
+            connection.rollback()
+        return jsonify({"error": f"Import nie powiodl sie: {exc}"}), 500
+    finally:
+        if connection:
+            connection.close()
+        if workbook:
+            workbook.close()
 
 
 @app.put("/api/orders/<order_id>")
@@ -1293,6 +1881,7 @@ def api_update_position(position_id):
             "przymykCount",
             "niskiProgCount",
             "attachment",
+            "clearAttachment",
         ]
     )
 
@@ -1316,6 +1905,7 @@ def api_update_position(position_id):
 
     materials = data.get("materials", {}) or {}
     attachment = data.get("attachment") if isinstance(data.get("attachment"), dict) else None
+    clear_attachment = to_bool(data.get("clearAttachment"))
     current_department_status = normalize_department_status(
         data.get("currentDepartmentStatus", item.get("current_department_status", "Dokumentacja"))
     )
@@ -1327,6 +1917,10 @@ def api_update_position(position_id):
         attachment_name = normalize_optional_text(attachment.get("name"))
         attachment_mime = normalize_optional_text(attachment.get("mimeType"))
         attachment_data = normalize_optional_text(attachment.get("dataBase64"))
+    elif clear_attachment:
+        attachment_name = None
+        attachment_mime = None
+        attachment_data = None
 
     connection.execute(
         """
@@ -1553,7 +2147,8 @@ def api_get_position_attachment(position_id):
     filename = row["attachment_name"] or "zalacznik.bin"
     mime = row["attachment_mime"] or "application/octet-stream"
     response = Response(content, mimetype=mime)
-    response.headers["Content-Disposition"] = f'attachment; filename="{filename}"'
+    encoded_name = quote(str(filename))
+    response.headers["Content-Disposition"] = f"inline; filename*=UTF-8''{encoded_name}"
     return response
 
 
@@ -1663,10 +2258,116 @@ def api_auth_logout():
     return jsonify({"ok": True})
 
 
-def require_admin_user_management():
+def require_admin():
     user = current_authenticated_user()
     role = str((user or {}).get("role", "")).strip().lower()
     if role != "admin":
+        return jsonify({"error": "Tylko administrator moze wykonac te operacje."}), 403
+    return None
+
+
+def sync_session_after_database_switch(preferred_login):
+    login = str(preferred_login or "").strip()
+    if not login:
+        session.clear()
+        g.current_user = None
+        return False
+    connection = db()
+    row = connection.execute(
+        """
+        SELECT id, name, department, login, role, permissions_json, active
+        FROM users
+        WHERE LOWER(COALESCE(login, '')) = LOWER(?) AND active = 1
+        LIMIT 1
+        """,
+        (login,),
+    ).fetchone()
+    connection.close()
+    if not row:
+        session.clear()
+        g.current_user = None
+        return False
+    user_payload = user_payload_from_row(row)
+    session["user_id"] = user_payload["id"]
+    g.current_user = user_payload
+    return True
+
+
+@app.get("/api/databases")
+def api_get_databases():
+    deny = require_admin()
+    if deny:
+        return deny
+    return jsonify({"databases": list_database_catalog(), "activeDatabase": get_active_database_key()})
+
+
+@app.post("/api/databases")
+def api_create_database():
+    deny = require_admin()
+    if deny:
+        return deny
+    data = request.get_json(force=True)
+    name = str(data.get("name", "")).strip()
+    slug = sanitize_variant_slug(name)
+    if not slug:
+        return jsonify({"error": "Podaj nazwe nowej bazy (litery/cyfry/-/_)."}), 400
+    database_key = f"variant:{slug}"
+    target_path = database_key_to_path(database_key)
+    if not target_path:
+        return jsonify({"error": "Nieprawidlowa nazwa bazy."}), 400
+    if target_path.exists():
+        return jsonify({"error": "Baza o tej nazwie juz istnieje."}), 409
+
+    initialize(target_path)
+    activate = to_bool(data.get("activate"))
+    relogin_required = False
+    if activate:
+        current_login = str((current_authenticated_user() or {}).get("login", "")).strip()
+        set_active_database_key(database_key)
+        relogin_required = not sync_session_after_database_switch(current_login)
+
+    return jsonify(
+        {
+            "ok": True,
+            "createdDatabase": database_key,
+            "activeDatabase": get_active_database_key(),
+            "databases": list_database_catalog(),
+            "requiresRelogin": relogin_required,
+        }
+    )
+
+
+@app.put("/api/databases/active")
+def api_set_active_database():
+    deny = require_admin()
+    if deny:
+        return deny
+    data = request.get_json(force=True)
+    database_key = str(data.get("key", "")).strip()
+    target_path = database_key_to_path(database_key)
+    if not target_path:
+        return jsonify({"error": "Nieprawidlowy identyfikator bazy."}), 400
+    if not target_path.exists():
+        return jsonify({"error": "Wybrana baza nie istnieje."}), 404
+
+    current_login = str((current_authenticated_user() or {}).get("login", "")).strip()
+    set_active_database_key(database_key)
+    initialize(target_path)
+    relogin_required = not sync_session_after_database_switch(current_login)
+
+    return jsonify(
+        {
+            "ok": True,
+            "activeDatabase": get_active_database_key(),
+            "databases": list_database_catalog(),
+            "requiresRelogin": relogin_required,
+        }
+    )
+
+
+def require_admin_user_management():
+    deny = require_admin()
+    if deny:
         return jsonify({"error": "Tylko administrator moze zarzadzac uzytkownikami."}), 403
     return None
 
@@ -2211,7 +2912,15 @@ def to_bool(value):
     return text in ("1", "true", "tak", "yes", "on")
 
 
-initialize()
+def initialize_runtime():
+    ensure_database_storage()
+    initialize(BASE_DB_PATH)
+    active_path = get_current_database_path()
+    if active_path != BASE_DB_PATH:
+        initialize(active_path)
+
+
+initialize_runtime()
 
 
 if __name__ == "__main__":

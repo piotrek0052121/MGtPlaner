@@ -71,6 +71,21 @@
               <p>Kliknij, aby otworzyc okno nowego zamowienia.</p>
               <button type="button" id="openOrderModalBtn">Dodaj zamowienie</button>
             </article>
+            <article class="card tile">
+              <h2>Import zamowien (Excel)</h2>
+              <p>Wgraj plik wzorcowy .xlsx, aby dodac zamowienia z pozycjami hurtowo.</p>
+              <label>
+                Plik importu
+                <input type="file" id="ordersImportFileInput" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" />
+              </label>
+              <div class="inline-controls">
+                <button type="button" id="importOrdersBtn">Importuj z pliku</button>
+                <a class="ghost-btn link-btn" id="downloadImportTemplateLink" href="./templates/import_zamowien_wzorzec.xlsx" download
+                  >Pobierz wzorzec</a
+                >
+              </div>
+              <small id="ordersImportResult"></small>
+            </article>
           </div>
 
           <div class="card orders-list-card">
@@ -421,6 +436,26 @@
         </section>
 
         <section class="view" id="view-settings">
+          <div class="card">
+            <h2>Bazy danych (warianty testowe)</h2>
+            <p id="databaseAdminHint" class="panel-hidden">Tylko administrator moze dodawac i przelaczac bazy.</p>
+            <div class="inline-controls">
+              <label>
+                Aktywna baza
+                <select id="databaseSelect"></select>
+              </label>
+              <button type="button" id="switchDatabaseBtn">Przelacz baze</button>
+            </div>
+            <div class="inline-controls">
+              <label>
+                Nowa baza (pusta)
+                <input id="newDatabaseNameInput" placeholder="np. wariant-maj-2026" />
+              </label>
+              <button type="button" id="createDatabaseBtn">Dodaj baze</button>
+            </div>
+            <small id="databaseStatusText"></small>
+          </div>
+
           <div class="card">
             <h2>Ustawienia planowania</h2>
             <form id="settingsForm" class="form-grid">
@@ -789,6 +824,13 @@
           <label class="full">
             Zalacznik
             <input type="file" name="attachment" />
+            <div class="inline-controls">
+              <button type="button" class="ghost-btn panel-hidden" id="openCurrentAttachmentBtn">Otworz obecny zalacznik</button>
+              <label class="checkbox-line panel-hidden" id="clearAttachmentWrap">
+                <input type="checkbox" name="clearAttachment" />
+                Usun obecny zalacznik
+              </label>
+            </div>
             <small id="positionAttachmentHint"></small>
           </label>
 
