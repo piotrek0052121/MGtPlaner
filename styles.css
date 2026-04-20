@@ -1266,11 +1266,6 @@ th {
   height: 30px;
 }
 
-.calendar-gantt-table thead tr:nth-child(5) th {
-  top: 112px;
-  height: 28px;
-}
-
 .cg-left-head {
   background: #9db4d2;
   color: #102238;
@@ -1287,7 +1282,6 @@ th {
 .cg-toggle-cell,
 .cg-dayname,
 .cg-date,
-.cg-shifts,
 .cg-day-cell {
   width: 78px;
   min-width: 78px;
@@ -1316,17 +1310,9 @@ th {
   font-size: 11px;
 }
 
-.cg-shifts {
-  background: #dbe8f8;
-  font-size: 11px;
-  font-weight: 700;
-  font-variant-numeric: tabular-nums;
-}
-
 .cg-toggle-cell.sat,
 .cg-dayname.sat,
 .cg-date.sat,
-.cg-shifts.sat,
 .cg-day-cell.sat {
   background-color: #e2e2e2;
 }
@@ -1334,14 +1320,12 @@ th {
 .cg-toggle-cell.sun,
 .cg-dayname.sun,
 .cg-date.sun,
-.cg-shifts.sun,
 .cg-day-cell.sun {
   background-color: #ffd6d6;
 }
 
 .cg-dayname.off,
 .cg-date.off,
-.cg-shifts.off,
 .cg-day-cell.off {
   background-image: repeating-linear-gradient(
     135deg,
@@ -1350,15 +1334,6 @@ th {
     rgba(255, 255, 255, 0) 2px,
     rgba(255, 255, 255, 0) 6px
   );
-}
-
-.cg-shifts.high {
-  background-color: #ffe9bf;
-}
-
-.cg-shifts.over {
-  background-color: #ffd0d0;
-  color: #6f1010;
 }
 
 .sticky-col {
@@ -1839,6 +1814,27 @@ pre {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(88px, 1fr));
   gap: 6px;
+}
+
+.weekday-shifts-grid {
+  grid-template-columns: repeat(auto-fit, minmax(132px, 1fr));
+}
+
+.weekday-shift-line {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 6px 8px;
+  background: #f4f8fc;
+  font-weight: 600;
+}
+
+.weekday-shift-line input[type="number"] {
+  width: 64px;
+  text-align: center;
 }
 
 .modal.hidden {

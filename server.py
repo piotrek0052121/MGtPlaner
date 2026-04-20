@@ -137,6 +137,7 @@ try:
 except (TypeError, ValueError):
     _raw_attachment_limit = 15 * 1024 * 1024
 MAX_ATTACHMENT_BYTES = max(1024, min(100 * 1024 * 1024, _raw_attachment_limit))
+DEFAULT_WEEKDAY_SHIFTS = {"0": 0, "1": 2, "2": 2, "3": 2, "4": 2, "5": 2, "6": 0}
 
 
 def sanitize_variant_slug(value):
@@ -490,6 +491,12 @@ def initialize(target_db_path=None):
     ensure_column(connection, "settings", "minutes_per_shift", "INTEGER NOT NULL DEFAULT 480")
     ensure_column(connection, "settings", "working_days_json", "TEXT NOT NULL DEFAULT '[1,2,3,4,5]'")
     ensure_column(connection, "settings", "calendar_overrides_json", "TEXT NOT NULL DEFAULT '{}'")
+    ensure_column(
+        connection,
+        "settings",
+        "weekday_shifts_json",
+        "TEXT NOT NULL DEFAULT '{\"0\":0,\"1\":2,\"2\":2,\"3\":2,\"4\":2,\"5\":2,\"6\":0}'",
+    )
     if column_exists(connection, "settings", "work_hours_per_shift"):
         connection.execute(
             """
@@ -505,6 +512,13 @@ def initialize(target_db_path=None):
     )
     connection.execute(
         "UPDATE settings SET calendar_overrides_json = COALESCE(NULLIF(calendar_overrides_json, ''), '{}') WHERE id = 1"
+    )
+    connection.execute(
+        """
+        UPDATE settings
+        SET weekday_shifts_json = COALESCE(NULLIF(weekday_shifts_json, ''), '{"0":0,"1":2,"2":2,"3":2,"4":2,"5":2,"6":0}')
+        WHERE id = 1
+        """
     )
 
     connection.execute(
@@ -704,7 +718,10 @@ def initialize(target_db_path=None):
     settings_row = connection.execute("SELECT id FROM settings WHERE id = 1").fetchone()
     if not settings_row:
         connection.execute(
-            "INSERT INTO settings (id, minutes_per_shift, working_days_json, calendar_overrides_json) VALUES (1, 480, '[1,2,3,4,5]', '{}')"
+            """
+            INSERT INTO settings (id, minutes_per_shift, working_days_json, calendar_overrides_json, weekday_shifts_json)
+            VALUES (1, 480, '[1,2,3,4,5]', '{}', '{"0":0,"1":2,"2":2,"3":2,"4":2,"5":2,"6":0}')
+            """
         )
 
     user_count = connection.execute("SELECT COUNT(*) AS cnt FROM users").fetchone()["cnt"]
@@ -793,13 +810,25 @@ def initialize(target_db_path=None):
 
 def get_settings(connection):
     row = connection.execute(
-        "SELECT minutes_per_shift, working_days_json, calendar_overrides_json FROM settings WHERE id = 1"
+        "SELECT minutes_per_shift, working_days_json, calendar_overrides_json, weekday_shifts_json FROM settings WHERE id = 1"
     ).fetchone()
     data = dict(row)
     try:
-        data["working_days"] = normalize_working_days(json.loads(data.get("working_days_json") or "[]"))
+        working_days = normalize_working_days(json.loads(data.get("working_days_json") or "[]"))
     except json.JSONDecodeError:
-        data["working_days"] = [1, 2, 3, 4, 5]
+        working_days = [1, 2, 3, 4, 5]
+    try:
+        parsed_shifts = json.loads(data.get("weekday_shifts_json") or "{}")
+    except json.JSONDecodeError:
+        parsed_shifts = {}
+    default_working_days = [1, 2, 3, 4, 5]
+    if parsed_shifts == DEFAULT_WEEKDAY_SHIFTS and sorted(working_days) != default_working_days:
+        weekday_shifts = normalize_weekday_shifts({}, working_days)
+    else:
+        weekday_shifts = normalize_weekday_shifts(parsed_shifts, working_days)
+    days_from_shifts = [day for day in range(7) if int(weekday_shifts.get(str(day), 0)) > 0]
+    data["weekday_shifts"] = weekday_shifts
+    data["working_days"] = days_from_shifts or working_days
     try:
         parsed = json.loads(data.get("calendar_overrides_json") or "{}")
     except json.JSONDecodeError:
@@ -2583,16 +2612,36 @@ def api_update_settings():
     else:
         working_days = current.get("working_days", [1, 2, 3, 4, 5])
 
+    if "weekdayShifts" in data:
+        weekday_shifts = normalize_weekday_shifts(data.get("weekdayShifts"), working_days)
+    elif "workingDays" in data:
+        weekday_shifts = normalize_weekday_shifts({}, working_days)
+    else:
+        weekday_shifts = normalize_weekday_shifts(current.get("weekday_shifts"), working_days)
+
+    if not any(int(weekday_shifts.get(str(day), 0)) > 0 for day in range(7)):
+        connection.close()
+        return jsonify({"error": "Przynajmniej jeden dzien musi miec minimum 1 zmiane."}), 400
+    working_days = [day for day in range(7) if int(weekday_shifts.get(str(day), 0)) > 0]
+
     if "calendarOverrides" in data:
         calendar_overrides = normalize_calendar_overrides(data.get("calendarOverrides"))
     else:
         calendar_overrides = current.get("calendar_overrides", {})
     connection.execute(
-        "UPDATE settings SET minutes_per_shift = ?, working_days_json = ?, calendar_overrides_json = ? WHERE id = 1",
+        """
+        UPDATE settings
+        SET minutes_per_shift = ?,
+            working_days_json = ?,
+            calendar_overrides_json = ?,
+            weekday_shifts_json = ?
+        WHERE id = 1
+        """,
         (
             minutes_per_shift,
             json.dumps(working_days, ensure_ascii=True),
             json.dumps(calendar_overrides, ensure_ascii=True),
+            json.dumps(weekday_shifts, ensure_ascii=True),
         ),
     )
     connection.commit()
@@ -2934,6 +2983,26 @@ def normalize_working_days(value):
         if 0 <= day <= 6 and day not in cleaned:
             cleaned.append(day)
     return cleaned or [1, 2, 3, 4, 5]
+
+
+def normalize_weekday_shifts(value, fallback_working_days=None):
+    base = {str(day): 0 for day in range(7)}
+    fallback_days = normalize_working_days(fallback_working_days or [1, 2, 3, 4, 5])
+    for day in fallback_days:
+        base[str(day)] = 2
+
+    if isinstance(value, dict):
+        for raw_day, raw_shift in value.items():
+            try:
+                day = int(raw_day)
+            except (TypeError, ValueError):
+                continue
+            if day < 0 or day > 6:
+                continue
+            base[str(day)] = clamp_int(raw_shift, 0, 3, base[str(day)])
+
+    has_any_working = any(int(base[str(day)]) > 0 for day in range(7))
+    return base if has_any_working else dict(DEFAULT_WEEKDAY_SHIFTS)
 
 
 def normalize_calendar_overrides(value):

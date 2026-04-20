@@ -45,7 +45,12 @@ const state = {
   orders: [],
   feedbackEvents: [],
   users: [],
-  settings: { minutesPerShift: 480, workingDays: [1, 2, 3, 4, 5], calendarOverrides: {} },
+  settings: {
+    minutesPerShift: 480,
+    workingDays: [1, 2, 3, 4, 5],
+    weekdayShifts: { 0: 0, 1: 2, 2: 2, 3: 2, 4: 2, 5: 2, 6: 0 },
+    calendarOverrides: {},
+  },
   stations: [],
   stationSettings: {},
   technologies: {},
@@ -979,12 +984,21 @@ async function saveSettings() {
     return;
   }
   const fd = new FormData(el.settingsForm);
-  const workingDays = Array.from(el.settingsForm.querySelectorAll('input[name="workingDay"]:checked'))
-    .map((item) => toInt(item.value))
-    .filter((item, index, arr) => arr.indexOf(item) === index);
+  const weekdayShifts = {};
+  Array.from(el.settingsForm.querySelectorAll('input[name="weekdayShift"]')).forEach((input) => {
+    const day = clamp(toInt(input.dataset.day), 0, 6);
+    weekdayShifts[String(day)] = clamp(toInt(input.value), 0, 3);
+  });
+  const workingDays = Object.entries(weekdayShifts)
+    .filter(([, shifts]) => toInt(shifts) > 0)
+    .map(([day]) => toInt(day))
+    .sort((a, b) => a - b);
+  if (workingDays.length === 0) {
+    throw new Error("Przynajmniej jeden dzien musi miec minimum 1 zmiane.");
+  }
   await api("/api/settings", {
     method: "PUT",
-    body: { minutesPerShift: toInt(fd.get("minutesPerShift")), workingDays },
+    body: { minutesPerShift: toInt(fd.get("minutesPerShift")), workingDays, weekdayShifts },
   });
   await reloadAndRender();
 }
@@ -2002,12 +2016,38 @@ function normalizeSettings(raw) {
     : Array.isArray(raw.working_days)
     ? raw.working_days.map((item) => toInt(item)).filter((item) => item >= 0 && item <= 6)
     : [1, 2, 3, 4, 5];
+  const weekdayShifts = normalizeWeekdayShifts(raw.weekdayShifts ?? raw.weekday_shifts, days);
+  const daysFromShifts = Object.entries(weekdayShifts)
+    .filter(([, shifts]) => toInt(shifts) > 0)
+    .map(([day]) => toInt(day))
+    .sort((a, b) => a - b);
   const calendarOverrides = normalizeCalendarOverrides(raw.calendarOverrides ?? raw.calendar_overrides);
   return {
     minutesPerShift: toInt(raw.minutesPerShift ?? raw.minutes_per_shift ?? 480),
-    workingDays: days.length > 0 ? days : [1, 2, 3, 4, 5],
+    workingDays: daysFromShifts.length > 0 ? daysFromShifts : days.length > 0 ? days : [1, 2, 3, 4, 5],
+    weekdayShifts,
     calendarOverrides,
   };
+}
+
+function normalizeWeekdayShifts(raw, fallbackDays = [1, 2, 3, 4, 5]) {
+  const base = { 0: 0, 1: 0, 2: 0, 3: 0, 4: 0, 5: 0, 6: 0 };
+  const defaultDays = Array.isArray(fallbackDays) && fallbackDays.length > 0 ? fallbackDays : [1, 2, 3, 4, 5];
+  defaultDays.forEach((day) => {
+    const dayIndex = clamp(toInt(day), 0, 6);
+    base[dayIndex] = 2;
+  });
+  if (raw && typeof raw === "object" && !Array.isArray(raw)) {
+    Object.entries(raw).forEach(([day, shifts]) => {
+      const dayIndex = clamp(toInt(day), 0, 6);
+      base[dayIndex] = clamp(toInt(shifts), 0, 3);
+    });
+  }
+  const hasWorkingDay = Object.values(base).some((value) => toInt(value) > 0);
+  if (!hasWorkingDay) {
+    return { 0: 0, 1: 2, 2: 2, 3: 2, 4: 2, 5: 2, 6: 0 };
+  }
+  return base;
 }
 
 function normalizeCalendarOverrides(raw) {
@@ -3093,11 +3133,10 @@ function renderGanttCalendarMatrix(container, orders) {
       working: isWorkingDay(dt),
     };
   });
-  const shiftSummaryByDay = buildGanttShiftSummaryByDay(dates, sourceOrders, workInfo);
 
   const leftHeader = `
-    <th class="cg-left-head sticky-col c1" rowspan="5">Numer zamowienia</th>
-    <th class="cg-left-head sticky-col c2" rowspan="5">Obszar</th>
+    <th class="cg-left-head sticky-col c1" rowspan="4">Numer zamowienia</th>
+    <th class="cg-left-head sticky-col c2" rowspan="4">Obszar</th>
   `;
   const leftColumnsWidth = 480;
   const dayColumnWidth = 78;
@@ -3149,33 +3188,6 @@ function renderGanttCalendarMatrix(container, orders) {
         classes.push("off");
       }
       return `<th class="${classes.join(" ")}">${formatDate(item.date)}</th>`;
-    })
-    .join("");
-
-  const shiftHeader = workInfo
-    .map((item, idx) => {
-      const info = shiftSummaryByDay[idx] || { usedShifts: 0, availableShifts: 0, utilization: 0 };
-      const classes = ["cg-shifts"];
-      if (item.saturday) {
-        classes.push("sat");
-      }
-      if (item.sunday) {
-        classes.push("sun");
-      }
-      if (!item.working) {
-        classes.push("off");
-      }
-      if (item.working && info.utilization >= 1.01) {
-        classes.push("over");
-      } else if (item.working && info.utilization >= 0.85) {
-        classes.push("high");
-      }
-      const usedLabel = info.usedShifts.toFixed(1).replace(".", ",");
-      const text = item.working ? `${usedLabel} / ${info.availableShifts}` : "-";
-      const title = item.working
-        ? `Zmiany planowane/dostepne: ${usedLabel} / ${info.availableShifts}`
-        : "Dzien niepracujacy";
-      return `<th class="${classes.join(" ")}" title="${title}">${text}</th>`;
     })
     .join("");
 
@@ -3270,7 +3282,6 @@ function renderGanttCalendarMatrix(container, orders) {
             <tr>${toggleHeader}</tr>
             <tr>${weekdayHeader}</tr>
             <tr>${dateHeader}</tr>
-            <tr>${shiftHeader}</tr>
           </thead>
           <tbody>
             ${bodyRows.join("")}
@@ -3280,63 +3291,6 @@ function renderGanttCalendarMatrix(container, orders) {
     </div>
   `;
   syncCalendarGanttScroll(container);
-}
-
-function buildGanttShiftSummaryByDay(dates, orders, workInfo) {
-  const minutesPerShift = Math.max(1, toInt(state.settings?.minutesPerShift));
-  const activeStations = (state.stations || []).filter((station) => station?.active !== false);
-  const stationConfig = {};
-  activeStations.forEach((station) => {
-    const cfg = state.stationSettings?.[station.id] || { shiftCount: 2, peopleCount: 1 };
-    stationConfig[station.id] = {
-      shiftCount: clamp(toInt(cfg.shiftCount), 1, 3),
-      peopleCount: Math.max(1, toInt(cfg.peopleCount)),
-    };
-  });
-
-  const minutesByDateAndStation = {};
-  (orders || []).forEach((order) => {
-    const stationDaily = order?.calculation?.stationDaily || {};
-    Object.entries(stationDaily).forEach(([stationId, dailyMap]) => {
-      if (!stationConfig[stationId]) {
-        return;
-      }
-      Object.entries(dailyMap || {}).forEach(([date, minutes]) => {
-        const value = Math.max(0, toFloat(minutes));
-        if (value <= 0) {
-          return;
-        }
-        const byStation = minutesByDateAndStation[date] || (minutesByDateAndStation[date] = {});
-        byStation[stationId] = (byStation[stationId] || 0) + value;
-      });
-    });
-  });
-
-  return (dates || []).map((date, index) => {
-    const dayInfo = workInfo?.[index];
-    if (!dayInfo?.working) {
-      return { usedShifts: 0, availableShifts: 0, utilization: 0 };
-    }
-    let availableShifts = 0;
-    let usedShifts = 0;
-    activeStations.forEach((station) => {
-      const cfg = stationConfig[station.id] || { shiftCount: 1, peopleCount: 1 };
-      const stationShiftCount = Math.max(1, toInt(cfg.shiftCount));
-      const peopleCount = Math.max(1, toInt(cfg.peopleCount));
-      availableShifts += stationShiftCount;
-      const minutes = Math.max(0, toFloat(minutesByDateAndStation?.[date]?.[station.id] || 0));
-      if (minutes <= 0) {
-        return;
-      }
-      usedShifts += minutes / Math.max(1, minutesPerShift * peopleCount);
-    });
-    const roundedUsed = Math.round(usedShifts * 10) / 10;
-    return {
-      usedShifts: roundedUsed,
-      availableShifts,
-      utilization: availableShifts > 0 ? roundedUsed / availableShifts : 0,
-    };
-  });
 }
 
 function syncCalendarGanttScroll(container) {
@@ -3597,7 +3551,7 @@ function renderReport() {
     });
   });
 
-  const capacities = dailyCapacitiesByStation();
+  const capacities = dailyCapacitiesByStation(selectedDate);
   const stationCapacity = Math.max(0, toFloat(capacities[stationId] || 0));
   const totalMinutes = rows.reduce((sum, row) => sum + row.minutes, 0);
   const overload = Math.max(0, totalMinutes - stationCapacity);
@@ -3630,7 +3584,6 @@ function renderExecution() {
   }
 
   const range = executionRangeForSelection(mode, anchor);
-  const dailyCapacityByDepartment = dailyCapacitiesByDepartment();
   const executionDepartments = ["Maszynownia", "Lakiernia", "Kompletacja", "Kosmetyka"];
   const totalsByDepartment = executionDepartments.reduce((acc, department) => {
     acc[department] = { planned: 0, actual: 0, capacity: 0 };
@@ -3642,6 +3595,7 @@ function renderExecution() {
     if (!isWorkingDay(toDate(date))) {
       return;
     }
+    const dailyCapacityByDepartment = dailyCapacitiesByDepartment(date);
     totalsByDepartment.Maszynownia.capacity += toFloat(dailyCapacityByDepartment.machining);
     totalsByDepartment.Lakiernia.capacity += toFloat(dailyCapacityByDepartment.painting);
     totalsByDepartment.Kompletacja.capacity += toFloat(dailyCapacityByDepartment.assembly);
@@ -4134,8 +4088,10 @@ function renderDatabaseManager() {
 
 function syncSettingsForm() {
   el.settingsForm.minutesPerShift.value = state.settings.minutesPerShift;
-  Array.from(el.settingsForm.querySelectorAll('input[name="workingDay"]')).forEach((input) => {
-    input.checked = state.settings.workingDays.includes(toInt(input.value));
+  Array.from(el.settingsForm.querySelectorAll('input[name="weekdayShift"]')).forEach((input) => {
+    const day = clamp(toInt(input.dataset.day), 0, 6);
+    const value = state.settings.weekdayShifts?.[day] ?? state.settings.weekdayShifts?.[String(day)] ?? 0;
+    input.value = clamp(toInt(value), 0, 3);
   });
 }
 
@@ -4304,8 +4260,30 @@ function recalculateOrders() {
 }
 
 function recalculateOrder(order, sharedPlan = null) {
-  const capacitiesByDepartment = dailyCapacitiesByDepartment();
-  const capacitiesByStation = dailyCapacitiesByStation();
+  const nominalCapacitiesByDepartment = dailyCapacitiesByDepartment(null, true);
+  const nominalCapacitiesByStation = dailyCapacitiesByStation(null, true);
+  const stationCapacityCache = {};
+  const processCapacityCache = {};
+  const capacityForStationOnDate = (stationId, dateValue) => {
+    const key = `${stationId}|${dateValue}`;
+    if (Object.prototype.hasOwnProperty.call(stationCapacityCache, key)) {
+      return stationCapacityCache[key];
+    }
+    const capacities = dailyCapacitiesByStation(dateValue, false);
+    const value = Math.max(0, toFloat(capacities[stationId] || 0));
+    stationCapacityCache[key] = value;
+    return value;
+  };
+  const capacityForProcessOnDate = (processKey, dateValue) => {
+    const key = `${processKey}|${dateValue}`;
+    if (Object.prototype.hasOwnProperty.call(processCapacityCache, key)) {
+      return processCapacityCache[key];
+    }
+    const capacities = dailyCapacitiesByDepartment(dateValue, false);
+    const value = Math.max(0, toFloat(capacities[processKey] || 0));
+    processCapacityCache[key] = value;
+    return value;
+  };
   const stationUsage = sharedPlan?.stationUsage || null;
   const departmentUsage = sharedPlan?.departmentUsage || null;
   const localStationUsage = {};
@@ -4364,10 +4342,11 @@ function recalculateOrder(order, sharedPlan = null) {
     }
 
     let processEndDate = toDate(startDate);
-    const assignedStreams = assignStreamsToStations(streams, processStationIds, stationWeights, capacitiesByStation);
+    const assignedStreams = assignStreamsToStations(streams, processStationIds, stationWeights, nominalCapacitiesByStation);
 
     if (assignedStreams.length === 0) {
-      const minutesCapacity = Math.max(1, capacitiesByDepartment[step.key]);
+      const minutesCapacity = (date) =>
+        Math.max(1, capacityForProcessOnDate(step.key, date) || nominalCapacitiesByDepartment[step.key] || 1);
       const baseUsageByDay = departmentUsage ? departmentUsage[step.key] || (departmentUsage[step.key] = {}) : null;
       const localUsageByDay = departmentUsage ? localDepartmentUsage[step.key] || (localDepartmentUsage[step.key] = {}) : null;
       const allocation = baseUsageByDay
@@ -4382,10 +4361,15 @@ function recalculateOrder(order, sharedPlan = null) {
       }
     } else {
       assignedStreams.forEach((stream) => {
-        const minutesCapacity = Math.max(
-          1,
-          capacitiesByStation[stream.stationId] || capacitiesByDepartment[step.key] || 1,
-        );
+        const minutesCapacity = (date) =>
+          Math.max(
+            1,
+            capacityForStationOnDate(stream.stationId, date) ||
+              capacityForProcessOnDate(step.key, date) ||
+              nominalCapacitiesByStation[stream.stationId] ||
+              nominalCapacitiesByDepartment[step.key] ||
+              1,
+          );
         const baseUsageByDay = stationUsage ? stationUsage[stream.stationId] || (stationUsage[stream.stationId] = {}) : null;
         const localUsageByDay = stationUsage ? localStationUsage[stream.stationId] || (localStationUsage[stream.stationId] = {}) : null;
         const allocation = baseUsageByDay
@@ -4498,15 +4482,29 @@ function sumOrderFramesAndSashes(order) {
   );
 }
 
-function dailyCapacitiesByDepartment() {
-  const result = { machining: 0, painting: 0, assembly: 0 };
+function stationCapacityForDate(station, dateValue, ignoreWeekdayLimit = false) {
+  if (!station || station.active === false) {
+    return 0;
+  }
   const minutesPerShift = Math.max(1, state.settings.minutesPerShift);
+  const cfg = state.stationSettings[station.id] || { shiftCount: 2, peopleCount: 1 };
+  const stationShiftCount = clamp(toInt(cfg.shiftCount), 1, 3);
+  const peopleCount = Math.max(1, toInt(cfg.peopleCount));
+  const dayShifts = ignoreWeekdayLimit ? stationShiftCount : shiftsForDate(dateValue || new Date());
+  const effectiveShiftCount = ignoreWeekdayLimit ? stationShiftCount : Math.min(stationShiftCount, dayShifts);
+  if (effectiveShiftCount <= 0) {
+    return 0;
+  }
+  return minutesPerShift * effectiveShiftCount * peopleCount;
+}
+
+function dailyCapacitiesByDepartment(dateValue = null, ignoreWeekdayLimit = false) {
+  const result = { machining: 0, painting: 0, assembly: 0 };
   state.stations.forEach((station) => {
-    if (station.active === false) {
+    const minutes = stationCapacityForDate(station, dateValue, ignoreWeekdayLimit);
+    if (minutes <= 0) {
       return;
     }
-    const cfg = state.stationSettings[station.id] || { shiftCount: 2, peopleCount: 1 };
-    const minutes = minutesPerShift * clamp(toInt(cfg.shiftCount), 1, 3) * Math.max(1, toInt(cfg.peopleCount));
     if (station.department === "Maszynownia") {
       result.machining += minutes;
     } else if (station.department === "Lakiernia") {
@@ -4518,15 +4516,10 @@ function dailyCapacitiesByDepartment() {
   return result;
 }
 
-function dailyCapacitiesByStation() {
+function dailyCapacitiesByStation(dateValue = null, ignoreWeekdayLimit = false) {
   const result = {};
-  const minutesPerShift = Math.max(1, state.settings.minutesPerShift);
   state.stations.forEach((station) => {
-    if (station.active === false) {
-      return;
-    }
-    const cfg = state.stationSettings[station.id] || { shiftCount: 2, peopleCount: 1 };
-    result[station.id] = minutesPerShift * clamp(toInt(cfg.shiftCount), 1, 3) * Math.max(1, toInt(cfg.peopleCount));
+    result[station.id] = stationCapacityForDate(station, dateValue, ignoreWeekdayLimit);
   });
   return result;
 }
@@ -4578,9 +4571,17 @@ function allocateMinutesByDay(startDateValue, totalMinutes, minutesPerDay) {
   const output = [];
   let remaining = Math.max(0, toFloat(totalMinutes));
   let day = normalizeWorkday(startDateValue);
-  while (remaining > 0) {
-    const current = Math.min(minutesPerDay, remaining);
-    output.push({ date: isoDate(day), minutes: current });
+  let safety = 0;
+  while (remaining > 0 && safety < 2500) {
+    safety += 1;
+    const date = isoDate(day);
+    const dayCapacity = resolveDailyCapacity(minutesPerDay, date);
+    if (dayCapacity <= 0) {
+      day = nextWorkingDay(day);
+      continue;
+    }
+    const current = Math.min(dayCapacity, remaining);
+    output.push({ date, minutes: current });
     remaining -= current;
     if (remaining > 0) {
       day = nextWorkingDay(day);
@@ -4598,10 +4599,16 @@ function allocateMinutesByDayWithBaseUsage(
 ) {
   const output = [];
   let remaining = Math.max(0, toFloat(totalMinutes));
-  const dayCapacity = Math.max(1, toFloat(minutesPerDay));
   let day = normalizeWorkday(startDateValue);
-  while (remaining > 0) {
+  let safety = 0;
+  while (remaining > 0 && safety < 2500) {
+    safety += 1;
     const date = isoDate(day);
+    const dayCapacity = resolveDailyCapacity(minutesPerDay, date);
+    if (dayCapacity <= 0) {
+      day = nextWorkingDay(day);
+      continue;
+    }
     const usedBase = Math.max(0, toFloat(baseUsageByDay?.[date] || 0));
     const usedLocal = Math.max(0, toFloat(localUsageByDay?.[date] || 0));
     const available = Math.max(0, dayCapacity - usedBase - usedLocal);
@@ -4618,6 +4625,11 @@ function allocateMinutesByDayWithBaseUsage(
     }
   }
   return output;
+}
+
+function resolveDailyCapacity(source, date) {
+  const raw = typeof source === "function" ? source(date) : source;
+  return Math.max(0, toFloat(raw));
 }
 
 function weightedStationMapForPositions(positions, process) {
@@ -5058,16 +5070,27 @@ function previousWorkingDay(dateValue) {
 }
 
 function isWorkingDay(date) {
+  return shiftsForDate(date) > 0;
+}
+
+function weekdayShiftCount(dayIndex) {
+  const key = clamp(toInt(dayIndex), 0, 6);
+  const source = state.settings?.weekdayShifts || {};
+  const raw = source[key] ?? source[String(key)] ?? 0;
+  return clamp(toInt(raw), 0, 3);
+}
+
+function shiftsForDate(dateValue) {
+  const date = toDate(dateValue);
   const key = isoDate(date);
   const overrides = state.settings.calendarOverrides || {};
   if (Object.prototype.hasOwnProperty.call(overrides, key)) {
-    return Boolean(overrides[key]);
+    if (!Boolean(overrides[key])) {
+      return 0;
+    }
+    return Math.max(1, weekdayShiftCount(date.getDay()));
   }
-  const selected =
-    Array.isArray(state.settings.workingDays) && state.settings.workingDays.length > 0
-      ? state.settings.workingDays
-      : [1, 2, 3, 4, 5];
-  return selected.includes(date.getDay());
+  return weekdayShiftCount(date.getDay());
 }
 
 function maxDate(values) {

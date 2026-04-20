@@ -464,16 +464,17 @@
                 <input type="number" min="60" max="720" name="minutesPerShift" required />
               </label>
               <label class="full">
-                Dni pracujace
-                <div class="working-days-grid">
-                  <label class="checkbox-line"><input type="checkbox" name="workingDay" value="1" />Pon</label>
-                  <label class="checkbox-line"><input type="checkbox" name="workingDay" value="2" />Wt</label>
-                  <label class="checkbox-line"><input type="checkbox" name="workingDay" value="3" />Sr</label>
-                  <label class="checkbox-line"><input type="checkbox" name="workingDay" value="4" />Czw</label>
-                  <label class="checkbox-line"><input type="checkbox" name="workingDay" value="5" />Pt</label>
-                  <label class="checkbox-line"><input type="checkbox" name="workingDay" value="6" />Sob</label>
-                  <label class="checkbox-line"><input type="checkbox" name="workingDay" value="0" />Ndz</label>
+                Zmiany na dni tygodnia
+                <div class="working-days-grid weekday-shifts-grid">
+                  <label class="weekday-shift-line">Pon <input type="number" name="weekdayShift" data-day="1" min="0" max="3" step="1" required /></label>
+                  <label class="weekday-shift-line">Wt <input type="number" name="weekdayShift" data-day="2" min="0" max="3" step="1" required /></label>
+                  <label class="weekday-shift-line">Sr <input type="number" name="weekdayShift" data-day="3" min="0" max="3" step="1" required /></label>
+                  <label class="weekday-shift-line">Czw <input type="number" name="weekdayShift" data-day="4" min="0" max="3" step="1" required /></label>
+                  <label class="weekday-shift-line">Pt <input type="number" name="weekdayShift" data-day="5" min="0" max="3" step="1" required /></label>
+                  <label class="weekday-shift-line">Sob <input type="number" name="weekdayShift" data-day="6" min="0" max="3" step="1" required /></label>
+                  <label class="weekday-shift-line">Ndz <input type="number" name="weekdayShift" data-day="0" min="0" max="3" step="1" required /></label>
                 </div>
+                <small>0 = dzien wolny, 1-3 = liczba zmian dla dnia.</small>
               </label>
               <button class="full" type="submit">Zapisz ustawienia</button>
             </form>
