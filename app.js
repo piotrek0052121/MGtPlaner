@@ -73,6 +73,7 @@ const ui = {
   ordersSortDir: "desc",
   currentView: "dashboard",
   currentUser: null,
+  pendingAttachmentPositionId: "",
 };
 
 const el = {
@@ -137,6 +138,7 @@ const el = {
   editSelectedOrderBtn: document.querySelector("#editSelectedOrderBtn"),
   saveSelectedOrderBtn: document.querySelector("#saveSelectedOrderBtn"),
   selectedOrderPositionsBody: document.querySelector("#selectedOrderPositionsBody"),
+  positionAttachmentUploadInput: document.querySelector("#positionAttachmentUploadInput"),
   kpiCards: document.querySelector("#kpiCards"),
   kpiDrilldownTitle: document.querySelector("#kpiDrilldownTitle"),
   kpiDrilldownBody: document.querySelector("#kpiDrilldownBody"),
@@ -295,6 +297,7 @@ function bindActions() {
   if (el.selectedOrderPositionsBody) {
     el.selectedOrderPositionsBody.addEventListener("click", onOrderPositionsTableClick);
   }
+  el.positionAttachmentUploadInput?.addEventListener("change", () => safeAction(uploadAttachmentFromPicker));
   el.kpiCards.addEventListener("click", onKpiCardClick);
   el.kpiDrilldownBody?.addEventListener("click", onKpiDrilldownClick);
   el.runReportBtn.addEventListener("click", renderReport);
@@ -668,6 +671,7 @@ function resetLocalSessionState() {
   ui.selectedOrderId = "";
   ui.editingUserId = "";
   ui.orderDetailsEditMode = false;
+  ui.pendingAttachmentPositionId = "";
   ui.kpiFilter = null;
   closeModal("orderDetailsModal");
   closeModal("positionModal");
@@ -749,14 +753,7 @@ async function createPosition() {
   const fd = new FormData(el.positionForm);
   const attachmentFile = fd.get("attachment");
   const clearAttachment = toBoolean(fd.get("clearAttachment"));
-  let attachment;
-  if (attachmentFile instanceof File && attachmentFile.size > 0) {
-    attachment = {
-      name: attachmentFile.name,
-      mimeType: attachmentFile.type || "application/octet-stream",
-      dataBase64: await fileToBase64(attachmentFile),
-    };
-  }
+  const hasAttachmentUpload = attachmentFile instanceof File && attachmentFile.size > 0;
 
   const payload = {
     positionNumber: String(fd.get("positionNumber") || "").trim(),
@@ -805,25 +802,33 @@ async function createPosition() {
   if (!payload.shapeRect && !payload.shapeSkos && !payload.shapeLuk) {
     payload.shapeRect = true;
   }
-  if (attachment) {
-    payload.attachment = attachment;
-  } else if (ui.editingPositionId && clearAttachment) {
-    payload.clearAttachment = true;
-  }
+  let targetPositionId = "";
 
   if (ui.editingPositionId) {
-    await api(`/api/positions/${encodeURIComponent(ui.editingPositionId)}`, {
+    targetPositionId = String(ui.editingPositionId || "");
+    await api(`/api/positions/${encodeURIComponent(targetPositionId)}`, {
       method: "PUT",
       body: payload,
     });
   } else {
-    await api(`/api/orders/${orderId}/positions`, {
+    const created = await api(`/api/orders/${orderId}/positions`, {
       method: "POST",
       body: {
         ...payload,
         currentDepartmentStatus: "Dokumentacja",
       },
     });
+    targetPositionId = String(created.id || "");
+  }
+
+  if (targetPositionId) {
+    if (hasAttachmentUpload) {
+      const formData = new FormData();
+      formData.append("file", attachmentFile, attachmentFile.name || "zalacznik.bin");
+      await apiForm(`/api/positions/${encodeURIComponent(targetPositionId)}/attachment`, formData);
+    } else if (ui.editingPositionId && clearAttachment) {
+      await api(`/api/positions/${encodeURIComponent(targetPositionId)}/attachment`, { method: "DELETE" });
+    }
   }
 
   ui.editingPositionId = "";
@@ -1191,6 +1196,47 @@ async function openCurrentEditingAttachment() {
     throw new Error("Ta pozycja nie ma zalacznika.");
   }
   await openPositionAttachment(position.id, position.attachmentName);
+}
+
+async function chooseAttachmentForPosition(positionId) {
+  const id = String(positionId || "").trim();
+  if (!id) {
+    return;
+  }
+  if (!el.positionAttachmentUploadInput) {
+    throw new Error("Brak kontrolki wyboru pliku.");
+  }
+  ui.pendingAttachmentPositionId = id;
+  el.positionAttachmentUploadInput.value = "";
+  el.positionAttachmentUploadInput.click();
+}
+
+async function uploadAttachmentFromPicker() {
+  if (!el.positionAttachmentUploadInput) {
+    return;
+  }
+  const positionId = String(ui.pendingAttachmentPositionId || "").trim();
+  const file = el.positionAttachmentUploadInput.files?.[0];
+  ui.pendingAttachmentPositionId = "";
+  if (!positionId || !file) {
+    return;
+  }
+  const formData = new FormData();
+  formData.append("file", file, file.name || "zalacznik.bin");
+  await apiForm(`/api/positions/${encodeURIComponent(positionId)}/attachment`, formData);
+  await reloadAndRender();
+}
+
+async function deletePositionAttachment(positionId) {
+  const id = String(positionId || "").trim();
+  if (!id) {
+    return;
+  }
+  if (!window.confirm("Usunac zalacznik z tej pozycji?")) {
+    return;
+  }
+  await api(`/api/positions/${encodeURIComponent(id)}/attachment`, { method: "DELETE" });
+  await reloadAndRender();
 }
 
 async function openPositionAttachment(positionId, fileName) {
@@ -1596,6 +1642,16 @@ function onArchiveTableClick(event) {
 }
 
 function onOrderPositionsTableClick(event) {
+  const uploadBtn = event.target.closest("button[data-action='upload-attachment']");
+  if (uploadBtn) {
+    safeAction(() => chooseAttachmentForPosition(uploadBtn.dataset.positionId));
+    return;
+  }
+  const deleteBtn = event.target.closest("button[data-action='delete-attachment']");
+  if (deleteBtn) {
+    safeAction(() => deletePositionAttachment(deleteBtn.dataset.positionId));
+    return;
+  }
   const attachmentBtn = event.target.closest("button[data-action='open-attachment']");
   if (attachmentBtn) {
     safeAction(() => openPositionAttachment(attachmentBtn.dataset.positionId, attachmentBtn.dataset.fileName || "zalacznik"));
@@ -2521,10 +2577,16 @@ function renderSelectedOrderDetails() {
       }).join("<br>");
 
       const attachment = position.attachmentName
-        ? `<button type="button" data-action="open-attachment" data-position-id="${position.id}" data-file-name="${escapeHtml(
+        ? `<div class="position-attachment-actions">
+            <button type="button" data-action="open-attachment" data-position-id="${position.id}" data-file-name="${escapeHtml(
             position.attachmentName,
-          )}">Otworz</button>`
-        : "-";
+          )}">Otworz</button>
+            <button type="button" data-action="upload-attachment" data-position-id="${position.id}">Zmien</button>
+            <button type="button" class="ghost-btn" data-action="delete-attachment" data-position-id="${position.id}">Usun</button>
+          </div>`
+        : `<div class="position-attachment-actions">
+            <button type="button" data-action="upload-attachment" data-position-id="${position.id}">Dodaj</button>
+          </div>`;
 
       return `
         <tr data-position-id="${position.id}">
@@ -3031,10 +3093,11 @@ function renderGanttCalendarMatrix(container, orders) {
       working: isWorkingDay(dt),
     };
   });
+  const shiftSummaryByDay = buildGanttShiftSummaryByDay(dates, sourceOrders, workInfo);
 
   const leftHeader = `
-    <th class="cg-left-head sticky-col c1" rowspan="4">Numer zamowienia</th>
-    <th class="cg-left-head sticky-col c2" rowspan="4">Obszar</th>
+    <th class="cg-left-head sticky-col c1" rowspan="5">Numer zamowienia</th>
+    <th class="cg-left-head sticky-col c2" rowspan="5">Obszar</th>
   `;
   const leftColumnsWidth = 480;
   const dayColumnWidth = 78;
@@ -3086,6 +3149,33 @@ function renderGanttCalendarMatrix(container, orders) {
         classes.push("off");
       }
       return `<th class="${classes.join(" ")}">${formatDate(item.date)}</th>`;
+    })
+    .join("");
+
+  const shiftHeader = workInfo
+    .map((item, idx) => {
+      const info = shiftSummaryByDay[idx] || { usedShifts: 0, availableShifts: 0, utilization: 0 };
+      const classes = ["cg-shifts"];
+      if (item.saturday) {
+        classes.push("sat");
+      }
+      if (item.sunday) {
+        classes.push("sun");
+      }
+      if (!item.working) {
+        classes.push("off");
+      }
+      if (item.working && info.utilization >= 1.01) {
+        classes.push("over");
+      } else if (item.working && info.utilization >= 0.85) {
+        classes.push("high");
+      }
+      const usedLabel = info.usedShifts.toFixed(1).replace(".", ",");
+      const text = item.working ? `${usedLabel} / ${info.availableShifts}` : "-";
+      const title = item.working
+        ? `Zmiany planowane/dostepne: ${usedLabel} / ${info.availableShifts}`
+        : "Dzien niepracujacy";
+      return `<th class="${classes.join(" ")}" title="${title}">${text}</th>`;
     })
     .join("");
 
@@ -3180,6 +3270,7 @@ function renderGanttCalendarMatrix(container, orders) {
             <tr>${toggleHeader}</tr>
             <tr>${weekdayHeader}</tr>
             <tr>${dateHeader}</tr>
+            <tr>${shiftHeader}</tr>
           </thead>
           <tbody>
             ${bodyRows.join("")}
@@ -3189,6 +3280,63 @@ function renderGanttCalendarMatrix(container, orders) {
     </div>
   `;
   syncCalendarGanttScroll(container);
+}
+
+function buildGanttShiftSummaryByDay(dates, orders, workInfo) {
+  const minutesPerShift = Math.max(1, toInt(state.settings?.minutesPerShift));
+  const activeStations = (state.stations || []).filter((station) => station?.active !== false);
+  const stationConfig = {};
+  activeStations.forEach((station) => {
+    const cfg = state.stationSettings?.[station.id] || { shiftCount: 2, peopleCount: 1 };
+    stationConfig[station.id] = {
+      shiftCount: clamp(toInt(cfg.shiftCount), 1, 3),
+      peopleCount: Math.max(1, toInt(cfg.peopleCount)),
+    };
+  });
+
+  const minutesByDateAndStation = {};
+  (orders || []).forEach((order) => {
+    const stationDaily = order?.calculation?.stationDaily || {};
+    Object.entries(stationDaily).forEach(([stationId, dailyMap]) => {
+      if (!stationConfig[stationId]) {
+        return;
+      }
+      Object.entries(dailyMap || {}).forEach(([date, minutes]) => {
+        const value = Math.max(0, toFloat(minutes));
+        if (value <= 0) {
+          return;
+        }
+        const byStation = minutesByDateAndStation[date] || (minutesByDateAndStation[date] = {});
+        byStation[stationId] = (byStation[stationId] || 0) + value;
+      });
+    });
+  });
+
+  return (dates || []).map((date, index) => {
+    const dayInfo = workInfo?.[index];
+    if (!dayInfo?.working) {
+      return { usedShifts: 0, availableShifts: 0, utilization: 0 };
+    }
+    let availableShifts = 0;
+    let usedShifts = 0;
+    activeStations.forEach((station) => {
+      const cfg = stationConfig[station.id] || { shiftCount: 1, peopleCount: 1 };
+      const stationShiftCount = Math.max(1, toInt(cfg.shiftCount));
+      const peopleCount = Math.max(1, toInt(cfg.peopleCount));
+      availableShifts += stationShiftCount;
+      const minutes = Math.max(0, toFloat(minutesByDateAndStation?.[date]?.[station.id] || 0));
+      if (minutes <= 0) {
+        return;
+      }
+      usedShifts += minutes / Math.max(1, minutesPerShift * peopleCount);
+    });
+    const roundedUsed = Math.round(usedShifts * 10) / 10;
+    return {
+      usedShifts: roundedUsed,
+      availableShifts,
+      utilization: availableShifts > 0 ? roundedUsed / availableShifts : 0,
+    };
+  });
 }
 
 function syncCalendarGanttScroll(container) {

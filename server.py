@@ -132,6 +132,11 @@ DEFAULT_TECHNOLOGIES = {
         "assemblyPreferred": ["K1", "K3", "K5", "K8"],
     },
 }
+try:
+    _raw_attachment_limit = int(os.getenv("MAX_ATTACHMENT_BYTES", str(15 * 1024 * 1024)))
+except (TypeError, ValueError):
+    _raw_attachment_limit = 15 * 1024 * 1024
+MAX_ATTACHMENT_BYTES = max(1024, min(100 * 1024 * 1024, _raw_attachment_limit))
 
 
 def sanitize_variant_slug(value):
@@ -2150,6 +2155,54 @@ def api_get_position_attachment(position_id):
     encoded_name = quote(str(filename))
     response.headers["Content-Disposition"] = f"inline; filename*=UTF-8''{encoded_name}"
     return response
+
+
+@app.post("/api/positions/<position_id>/attachment")
+def api_upload_position_attachment(position_id):
+    upload = request.files.get("file")
+    if not upload or not upload.filename:
+        return jsonify({"error": "Wybierz plik do zalaczenia."}), 400
+
+    filename = str(upload.filename or "").strip()
+    mime = str(upload.mimetype or "application/octet-stream").strip() or "application/octet-stream"
+    payload = upload.read()
+    if payload is None:
+        payload = b""
+    if len(payload) <= 0:
+        return jsonify({"error": "Wybrany plik jest pusty."}), 400
+    if len(payload) > MAX_ATTACHMENT_BYTES:
+        return jsonify({"error": f"Plik jest za duzy. Maksymalny rozmiar to {MAX_ATTACHMENT_BYTES // (1024 * 1024)} MB."}), 413
+
+    attachment_data = base64.b64encode(payload).decode("ascii")
+    connection = db()
+    row = connection.execute("SELECT id, order_id FROM order_positions WHERE id = ?", (position_id,)).fetchone()
+    if not row:
+        connection.close()
+        return jsonify({"error": "Nie znaleziono pozycji."}), 404
+
+    connection.execute(
+        "UPDATE order_positions SET attachment_name = ?, attachment_mime = ?, attachment_data = ? WHERE id = ?",
+        (filename, mime, attachment_data, position_id),
+    )
+    connection.commit()
+    connection.close()
+    return jsonify({"ok": True})
+
+
+@app.delete("/api/positions/<position_id>/attachment")
+def api_delete_position_attachment(position_id):
+    connection = db()
+    row = connection.execute("SELECT id FROM order_positions WHERE id = ?", (position_id,)).fetchone()
+    if not row:
+        connection.close()
+        return jsonify({"error": "Nie znaleziono pozycji."}), 404
+    connection.execute(
+        "UPDATE order_positions SET attachment_name = NULL, attachment_mime = NULL, attachment_data = NULL WHERE id = ?",
+        (position_id,),
+    )
+    connection.commit()
+    connection.close()
+    return jsonify({"ok": True})
 
 
 @app.post("/api/positions/bulk-status")
