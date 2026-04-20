@@ -497,6 +497,7 @@ def initialize(target_db_path=None):
         "weekday_shifts_json",
         "TEXT NOT NULL DEFAULT '{\"0\":0,\"1\":2,\"2\":2,\"3\":2,\"4\":2,\"5\":2,\"6\":0}'",
     )
+    ensure_column(connection, "settings", "station_overtime_json", "TEXT NOT NULL DEFAULT '{}'")
     if column_exists(connection, "settings", "work_hours_per_shift"):
         connection.execute(
             """
@@ -519,6 +520,9 @@ def initialize(target_db_path=None):
         SET weekday_shifts_json = COALESCE(NULLIF(weekday_shifts_json, ''), '{"0":0,"1":2,"2":2,"3":2,"4":2,"5":2,"6":0}')
         WHERE id = 1
         """
+    )
+    connection.execute(
+        "UPDATE settings SET station_overtime_json = COALESCE(NULLIF(station_overtime_json, ''), '{}') WHERE id = 1"
     )
 
     connection.execute(
@@ -719,8 +723,15 @@ def initialize(target_db_path=None):
     if not settings_row:
         connection.execute(
             """
-            INSERT INTO settings (id, minutes_per_shift, working_days_json, calendar_overrides_json, weekday_shifts_json)
-            VALUES (1, 480, '[1,2,3,4,5]', '{}', '{"0":0,"1":2,"2":2,"3":2,"4":2,"5":2,"6":0}')
+            INSERT INTO settings (
+              id,
+              minutes_per_shift,
+              working_days_json,
+              calendar_overrides_json,
+              weekday_shifts_json,
+              station_overtime_json
+            )
+            VALUES (1, 480, '[1,2,3,4,5]', '{}', '{"0":0,"1":2,"2":2,"3":2,"4":2,"5":2,"6":0}', '{}')
             """
         )
 
@@ -810,7 +821,16 @@ def initialize(target_db_path=None):
 
 def get_settings(connection):
     row = connection.execute(
-        "SELECT minutes_per_shift, working_days_json, calendar_overrides_json, weekday_shifts_json FROM settings WHERE id = 1"
+        """
+        SELECT
+          minutes_per_shift,
+          working_days_json,
+          calendar_overrides_json,
+          weekday_shifts_json,
+          station_overtime_json
+        FROM settings
+        WHERE id = 1
+        """
     ).fetchone()
     data = dict(row)
     try:
@@ -834,6 +854,11 @@ def get_settings(connection):
     except json.JSONDecodeError:
         parsed = {}
     data["calendar_overrides"] = normalize_calendar_overrides(parsed)
+    try:
+        parsed_overtime = json.loads(data.get("station_overtime_json") or "{}")
+    except json.JSONDecodeError:
+        parsed_overtime = {}
+    data["station_overtime"] = normalize_station_overtime(parsed_overtime)
     return data
 
 
@@ -2670,6 +2695,72 @@ def api_update_calendar_day():
     return jsonify({"ok": True})
 
 
+@app.put("/api/settings/station-overtime")
+def api_upsert_station_overtime():
+    data = request.get_json(force=True)
+    date_value = str(data.get("date", "")).strip()
+    station_id = str(data.get("stationId", "")).strip()
+    minutes = clamp_int(data.get("minutes"), 0, 1440, 0)
+
+    if not is_valid_iso_date(date_value):
+        return jsonify({"error": "Nieprawidlowa data. Oczekiwano formatu RRRR-MM-DD."}), 400
+    if not station_id:
+        return jsonify({"error": "Wybierz stanowisko."}), 400
+    if minutes <= 0:
+        return jsonify({"error": "Minuty nadgodzin musza byc wieksze od 0."}), 400
+
+    connection = db()
+    valid_station_ids = {item["id"] for item in get_stations(connection)}
+    if station_id not in valid_station_ids:
+        connection.close()
+        return jsonify({"error": "Wybrane stanowisko nie istnieje."}), 400
+
+    current = get_settings(connection)
+    overtime = normalize_station_overtime(current.get("station_overtime"))
+    day_map = dict(overtime.get(date_value, {}))
+    day_map[station_id] = minutes
+    overtime[date_value] = day_map
+
+    connection.execute(
+        "UPDATE settings SET station_overtime_json = ? WHERE id = 1",
+        (json.dumps(overtime, ensure_ascii=True),),
+    )
+    connection.commit()
+    connection.close()
+    return jsonify({"ok": True})
+
+
+@app.delete("/api/settings/station-overtime")
+def api_delete_station_overtime():
+    data = request.get_json(force=True)
+    date_value = str(data.get("date", "")).strip()
+    station_id = str(data.get("stationId", "")).strip()
+
+    if not is_valid_iso_date(date_value):
+        return jsonify({"error": "Nieprawidlowa data. Oczekiwano formatu RRRR-MM-DD."}), 400
+    if not station_id:
+        return jsonify({"error": "Brak stanowiska do usuniecia."}), 400
+
+    connection = db()
+    current = get_settings(connection)
+    overtime = normalize_station_overtime(current.get("station_overtime"))
+    day_map = dict(overtime.get(date_value, {}))
+    if station_id in day_map:
+        del day_map[station_id]
+    if day_map:
+        overtime[date_value] = day_map
+    elif date_value in overtime:
+        del overtime[date_value]
+
+    connection.execute(
+        "UPDATE settings SET station_overtime_json = ? WHERE id = 1",
+        (json.dumps(overtime, ensure_ascii=True),),
+    )
+    connection.commit()
+    connection.close()
+    return jsonify({"ok": True})
+
+
 @app.put("/api/station-settings")
 def api_update_station_settings():
     data = request.get_json(force=True)
@@ -3014,6 +3105,29 @@ def normalize_calendar_overrides(value):
         if not is_valid_iso_date(date_value):
             continue
         cleaned[date_value] = to_bool(item)
+    return cleaned
+
+
+def normalize_station_overtime(value):
+    if not isinstance(value, dict):
+        return {}
+    cleaned = {}
+    for key, item in value.items():
+        date_value = str(key).strip()
+        if not is_valid_iso_date(date_value):
+            continue
+        if not isinstance(item, dict):
+            continue
+        day_map = {}
+        for raw_station_id, raw_minutes in item.items():
+            station_id = str(raw_station_id or "").strip()
+            if not station_id:
+                continue
+            minutes = clamp_int(raw_minutes, 0, 1440, 0)
+            if minutes > 0:
+                day_map[station_id] = minutes
+        if day_map:
+            cleaned[date_value] = day_map
     return cleaned
 
 

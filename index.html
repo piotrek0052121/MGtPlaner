@@ -481,6 +481,40 @@
           </div>
 
           <div class="card">
+            <h2>Dodatkowy czas (nadgodziny)</h2>
+            <p>Dodaj minuty dla konkretnego dnia i konkretnego stanowiska.</p>
+            <div class="inline-controls overtime-inline-controls">
+              <label>
+                Data
+                <input type="date" id="overtimeDateInput" />
+              </label>
+              <label>
+                Stanowisko
+                <select id="overtimeStationSelect"></select>
+              </label>
+              <label>
+                Minuty
+                <input type="number" id="overtimeMinutesInput" min="1" max="1440" step="1" value="60" />
+              </label>
+              <button type="button" id="addStationOvertimeBtn">Dodaj lub aktualizuj</button>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Data</th>
+                    <th>Stanowisko</th>
+                    <th>Minuty</th>
+                    <th>Akcja</th>
+                  </tr>
+                </thead>
+                <tbody id="stationOvertimeTableBody"></tbody>
+              </table>
+            </div>
+            <small>Jesli wpis juz istnieje dla tej samej daty i stanowiska, zostanie nadpisany nowa wartoscia.</small>
+          </div>
+
+          <div class="card">
             <h2>Obsada i zmiany na stanowiskach</h2>
             <div class="inline-controls">
               <button type="button" id="addStationRowBtn">Dodaj stanowisko</button>

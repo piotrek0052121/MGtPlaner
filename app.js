@@ -49,6 +49,7 @@ const state = {
     minutesPerShift: 480,
     workingDays: [1, 2, 3, 4, 5],
     weekdayShifts: { 0: 0, 1: 2, 2: 2, 3: 2, 4: 2, 5: 2, 6: 0 },
+    stationOvertime: {},
     calendarOverrides: {},
   },
   stations: [],
@@ -198,6 +199,11 @@ const el = {
   createDatabaseBtn: document.querySelector("#createDatabaseBtn"),
   databaseStatusText: document.querySelector("#databaseStatusText"),
   databaseAdminHint: document.querySelector("#databaseAdminHint"),
+  overtimeDateInput: document.querySelector("#overtimeDateInput"),
+  overtimeStationSelect: document.querySelector("#overtimeStationSelect"),
+  overtimeMinutesInput: document.querySelector("#overtimeMinutesInput"),
+  addStationOvertimeBtn: document.querySelector("#addStationOvertimeBtn"),
+  stationOvertimeTableBody: document.querySelector("#stationOvertimeTableBody"),
   stationSettingsTableBody: document.querySelector("#stationSettingsTableBody"),
   addStationRowBtn: document.querySelector("#addStationRowBtn"),
   saveStationSettingsBtn: document.querySelector("#saveStationSettingsBtn"),
@@ -345,6 +351,8 @@ function bindActions() {
   });
   el.switchDatabaseBtn?.addEventListener("click", () => safeAction(switchActiveDatabase));
   el.createDatabaseBtn?.addEventListener("click", () => safeAction(createDatabaseVariant));
+  el.addStationOvertimeBtn?.addEventListener("click", () => safeAction(upsertStationOvertime));
+  el.stationOvertimeTableBody?.addEventListener("click", onStationOvertimeTableClick);
   el.addStationRowBtn.addEventListener("click", addStationEditorRow);
   el.saveStationSettingsBtn.addEventListener("click", () => safeAction(saveStationSettings));
   el.stationSettingsTableBody.addEventListener("click", onStationSettingsTableClick);
@@ -1058,6 +1066,49 @@ async function saveCalendarDayWorking(date, working) {
     body: { date, working: Boolean(working) },
   });
   await reloadAndRender();
+}
+
+async function upsertStationOvertime() {
+  const date = normalizeOptionalDate(el.overtimeDateInput?.value);
+  const stationId = String(el.overtimeStationSelect?.value || "").trim();
+  const minutes = clamp(toInt(el.overtimeMinutesInput?.value), 0, 1440);
+  if (!date) {
+    throw new Error("Wybierz date nadgodzin.");
+  }
+  if (!stationId) {
+    throw new Error("Wybierz stanowisko dla nadgodzin.");
+  }
+  if (minutes <= 0) {
+    throw new Error("Minuty nadgodzin musza byc wieksze od 0.");
+  }
+  await api("/api/settings/station-overtime", {
+    method: "PUT",
+    body: { date, stationId, minutes },
+  });
+  await reloadAndRender();
+}
+
+async function removeStationOvertime(date, stationId) {
+  const normalizedDate = normalizeOptionalDate(date);
+  const normalizedStation = String(stationId || "").trim();
+  if (!normalizedDate || !normalizedStation) {
+    throw new Error("Brak danych wpisu nadgodzin do usuniecia.");
+  }
+  await api("/api/settings/station-overtime", {
+    method: "DELETE",
+    body: { date: normalizedDate, stationId: normalizedStation },
+  });
+  await reloadAndRender();
+}
+
+function onStationOvertimeTableClick(event) {
+  const removeBtn = event.target.closest("button[data-overtime-remove='1']");
+  if (!removeBtn) {
+    return;
+  }
+  const date = String(removeBtn.dataset.date || "");
+  const stationId = String(removeBtn.dataset.stationId || "");
+  safeAction(() => removeStationOvertime(date, stationId));
 }
 
 async function updateOrderManualStart(orderId, targetDate) {
@@ -2022,10 +2073,12 @@ function normalizeSettings(raw) {
     .map(([day]) => toInt(day))
     .sort((a, b) => a - b);
   const calendarOverrides = normalizeCalendarOverrides(raw.calendarOverrides ?? raw.calendar_overrides);
+  const stationOvertime = normalizeStationOvertime(raw.stationOvertime ?? raw.station_overtime);
   return {
     minutesPerShift: toInt(raw.minutesPerShift ?? raw.minutes_per_shift ?? 480),
     workingDays: daysFromShifts.length > 0 ? daysFromShifts : days.length > 0 ? days : [1, 2, 3, 4, 5],
     weekdayShifts,
+    stationOvertime,
     calendarOverrides,
   };
 }
@@ -2061,6 +2114,37 @@ function normalizeCalendarOverrides(raw) {
       return;
     }
     result[key] = Boolean(value);
+  });
+  return result;
+}
+
+function normalizeStationOvertime(raw) {
+  if (!raw || typeof raw !== "object") {
+    return {};
+  }
+  const result = {};
+  Object.entries(raw).forEach(([date, value]) => {
+    const key = String(date || "").trim();
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(key)) {
+      return;
+    }
+    if (!value || typeof value !== "object") {
+      return;
+    }
+    const dayMap = {};
+    Object.entries(value).forEach(([stationId, minutes]) => {
+      const normalizedStationId = String(stationId || "").trim();
+      if (!normalizedStationId) {
+        return;
+      }
+      const normalizedMinutes = clamp(toInt(minutes), 0, 1440);
+      if (normalizedMinutes > 0) {
+        dayMap[normalizedStationId] = normalizedMinutes;
+      }
+    });
+    if (Object.keys(dayMap).length > 0) {
+      result[key] = dayMap;
+    }
   });
   return result;
 }
@@ -2360,6 +2444,7 @@ function renderAll() {
   renderUsers();
   renderDatabaseManager();
   syncSettingsForm();
+  renderStationOvertimeEditor();
   renderStationSettingsEditor();
   renderMaterialRulesEditor();
   renderTechnologyAllocationEditor();
@@ -4095,6 +4180,80 @@ function syncSettingsForm() {
   });
 }
 
+function renderStationOvertimeEditor() {
+  if (!el.overtimeStationSelect || !el.stationOvertimeTableBody) {
+    return;
+  }
+  const activeStations = (state.stations || []).filter((item) => item?.active !== false);
+  const stationItems = activeStations.length > 0 ? activeStations : state.stations || [];
+  const hasStations = stationItems.length > 0;
+  const stationOptions = stationItems
+    .map((station) => {
+      const label = `${station.name} (${station.id})`;
+      return `<option value="${escapeHtml(station.id)}">${escapeHtml(label)}</option>`;
+    })
+    .join("");
+  const currentStationValue = String(el.overtimeStationSelect.value || "");
+  el.overtimeStationSelect.innerHTML = stationOptions || '<option value="">Brak stanowisk</option>';
+  el.overtimeStationSelect.disabled = !hasStations;
+  if (el.addStationOvertimeBtn) {
+    el.addStationOvertimeBtn.disabled = !hasStations;
+  }
+  if (currentStationValue && Array.from(el.overtimeStationSelect.options).some((opt) => opt.value === currentStationValue)) {
+    el.overtimeStationSelect.value = currentStationValue;
+  }
+  if (el.overtimeStationSelect.options.length > 0 && !el.overtimeStationSelect.value) {
+    el.overtimeStationSelect.value = el.overtimeStationSelect.options[0].value;
+  }
+  if (el.overtimeDateInput && !el.overtimeDateInput.value) {
+    el.overtimeDateInput.value = isoDate(new Date());
+  }
+  if (el.overtimeMinutesInput) {
+    const current = clamp(toInt(el.overtimeMinutesInput.value), 1, 1440);
+    el.overtimeMinutesInput.value = String(current || 60);
+  }
+
+  const stationNameById = {};
+  (state.stations || []).forEach((station) => {
+    stationNameById[station.id] = station.name;
+  });
+  const flat = [];
+  const overtime = state.settings?.stationOvertime || {};
+  Object.entries(overtime).forEach(([date, dayMap]) => {
+    Object.entries(dayMap || {}).forEach(([stationId, minutes]) => {
+      flat.push({
+        date,
+        stationId,
+        stationName: stationNameById[stationId] || stationId,
+        minutes: Math.max(0, toInt(minutes)),
+      });
+    });
+  });
+  flat.sort(
+    (a, b) => a.date.localeCompare(b.date) || a.stationName.localeCompare(b.stationName, "pl", { sensitivity: "base" }),
+  );
+  if (flat.length === 0) {
+    el.stationOvertimeTableBody.innerHTML = `<tr><td colspan="4">Brak nadgodzin dla stanowisk.</td></tr>`;
+    return;
+  }
+  el.stationOvertimeTableBody.innerHTML = flat
+    .map(
+      (item) => `
+        <tr>
+          <td>${escapeHtml(formatDate(item.date))}</td>
+          <td>${escapeHtml(item.stationName)} (${escapeHtml(item.stationId)})</td>
+          <td>${escapeHtml(String(item.minutes))}</td>
+          <td>
+            <button type="button" data-overtime-remove="1" data-date="${escapeHtml(item.date)}" data-station-id="${escapeHtml(
+              item.stationId,
+            )}">Usun</button>
+          </td>
+        </tr>
+      `,
+    )
+    .join("");
+}
+
 function renderStationSettingsEditor() {
   if (state.stations.length === 0) {
     el.stationSettingsTableBody.innerHTML = `<tr><td colspan="7">Brak stanowisk. Uzyj przycisku "Dodaj stanowisko".</td></tr>`;
@@ -4482,20 +4641,46 @@ function sumOrderFramesAndSashes(order) {
   );
 }
 
+function normalizeIsoDateKey(dateValue) {
+  if (dateValue === null || dateValue === undefined || dateValue === "") {
+    return null;
+  }
+  const text = String(dateValue).trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(text)) {
+    return text;
+  }
+  const parsed = toDate(dateValue);
+  if (Number.isNaN(parsed.getTime())) {
+    return null;
+  }
+  return isoDate(parsed);
+}
+
+function stationOvertimeMinutesForDate(stationId, dateValue) {
+  const dateKey = normalizeIsoDateKey(dateValue);
+  if (!dateKey || !stationId) {
+    return 0;
+  }
+  const dayMap = state.settings?.stationOvertime?.[dateKey] || {};
+  return clamp(toInt(dayMap?.[stationId] || 0), 0, 1440);
+}
+
 function stationCapacityForDate(station, dateValue, ignoreWeekdayLimit = false) {
   if (!station || station.active === false) {
     return 0;
   }
+  const dateKey = normalizeIsoDateKey(dateValue);
   const minutesPerShift = Math.max(1, state.settings.minutesPerShift);
   const cfg = state.stationSettings[station.id] || { shiftCount: 2, peopleCount: 1 };
   const stationShiftCount = clamp(toInt(cfg.shiftCount), 1, 3);
   const peopleCount = Math.max(1, toInt(cfg.peopleCount));
-  const dayShifts = ignoreWeekdayLimit ? stationShiftCount : shiftsForDate(dateValue || new Date());
+  const dayShifts = ignoreWeekdayLimit ? stationShiftCount : shiftsForDate(dateKey || new Date());
   const effectiveShiftCount = ignoreWeekdayLimit ? stationShiftCount : Math.min(stationShiftCount, dayShifts);
+  const overtimeMinutes = dateKey ? stationOvertimeMinutesForDate(station.id, dateKey) : 0;
   if (effectiveShiftCount <= 0) {
-    return 0;
+    return overtimeMinutes;
   }
-  return minutesPerShift * effectiveShiftCount * peopleCount;
+  return minutesPerShift * effectiveShiftCount * peopleCount + overtimeMinutes;
 }
 
 function dailyCapacitiesByDepartment(dateValue = null, ignoreWeekdayLimit = false) {
@@ -5070,7 +5255,16 @@ function previousWorkingDay(dateValue) {
 }
 
 function isWorkingDay(date) {
-  return shiftsForDate(date) > 0;
+  return shiftsForDate(date) > 0 || hasAnyStationOvertimeOnDate(date);
+}
+
+function hasAnyStationOvertimeOnDate(dateValue) {
+  const dateKey = normalizeIsoDateKey(dateValue);
+  if (!dateKey) {
+    return false;
+  }
+  const dayMap = state.settings?.stationOvertime?.[dateKey] || {};
+  return Object.values(dayMap).some((minutes) => toInt(minutes) > 0);
 }
 
 function weekdayShiftCount(dayIndex) {

@@ -1837,6 +1837,14 @@ pre {
   text-align: center;
 }
 
+.overtime-inline-controls label {
+  min-width: 180px;
+}
+
+.overtime-inline-controls input[type="number"] {
+  width: 110px;
+}
+
 .modal.hidden {
   display: none;
 }
