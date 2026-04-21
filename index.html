@@ -213,8 +213,12 @@
             <h2>Gantt dzienny zamowien</h2>
             <div class="inline-controls">
               <label>
-                Liczba dni kalendarza
-                <input type="number" id="ganttDaysCountInput" min="14" max="730" step="1" value="180" />
+                Dni wstecz
+                <input type="number" id="ganttDaysBackInput" min="0" max="730" step="1" value="30" />
+              </label>
+              <label>
+                Dni w przod
+                <input type="number" id="ganttDaysForwardInput" min="1" max="730" step="1" value="180" />
               </label>
               <label>
                 Szukaj zamowienia
@@ -224,7 +228,7 @@
                 Status
                 <select id="ganttStatusFilter"></select>
               </label>
-              <button type="button" id="applyGanttDaysBtn">Ustaw zakres dni</button>
+              <button type="button" id="applyGanttDaysBtn">Ustaw zakres</button>
               <button type="button" id="clearGanttFiltersBtn">Wyczysc filtry</button>
             </div>
             <div id="ganttBoard" class="gantt-board"></div>

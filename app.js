@@ -70,7 +70,6 @@ const ui = {
   editingPositionId: "",
   kpiFilter: null,
   ganttExpandedOrders: {},
-  ganttDaysToShow: 180,
   ganttCalendarScrollLeft: 0,
   ganttCalendarScrollTop: 0,
   ganttDragOrderId: "",
@@ -81,6 +80,8 @@ const ui = {
   currentView: "dashboard",
   currentUser: null,
   pendingAttachmentPositionId: "",
+  ganttDaysBackToShow: 30,
+  ganttDaysForwardToShow: 180,
 };
 
 const el = {
@@ -151,7 +152,8 @@ const el = {
   kpiDrilldownTitle: document.querySelector("#kpiDrilldownTitle"),
   kpiDrilldownBody: document.querySelector("#kpiDrilldownBody"),
   ganttBoard: document.querySelector("#ganttBoard"),
-  ganttDaysCountInput: document.querySelector("#ganttDaysCountInput"),
+  ganttDaysBackInput: document.querySelector("#ganttDaysBackInput"),
+  ganttDaysForwardInput: document.querySelector("#ganttDaysForwardInput"),
   applyGanttDaysBtn: document.querySelector("#applyGanttDaysBtn"),
   ganttSearchInput: document.querySelector("#ganttSearchInput"),
   ganttStatusFilter: document.querySelector("#ganttStatusFilter"),
@@ -389,7 +391,14 @@ function bindActions() {
   el.ganttSearchInput?.addEventListener("input", renderGantt);
   el.ganttStatusFilter?.addEventListener("change", renderGantt);
   el.clearGanttFiltersBtn?.addEventListener("click", clearGanttFilters);
-  el.ganttDaysCountInput.addEventListener("keydown", (event) => {
+  el.ganttDaysBackInput?.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter") {
+      return;
+    }
+    event.preventDefault();
+    applyGanttDaysCount();
+  });
+  el.ganttDaysForwardInput?.addEventListener("keydown", (event) => {
     if (event.key !== "Enter") {
       return;
     }
@@ -1907,10 +1916,18 @@ function onGanttCalendarToggleChange(event) {
 }
 
 function applyGanttDaysCount() {
-  const raw = toInt(el.ganttDaysCountInput.value);
-  const bounded = clamp(raw, 14, 730);
-  ui.ganttDaysToShow = bounded;
-  el.ganttDaysCountInput.value = String(bounded);
+  const rawBack = toInt(el.ganttDaysBackInput?.value);
+  const rawForward = toInt(el.ganttDaysForwardInput?.value);
+  const boundedBack = clamp(rawBack, 0, 730);
+  const boundedForward = clamp(rawForward, 1, 730);
+  ui.ganttDaysBackToShow = boundedBack;
+  ui.ganttDaysForwardToShow = boundedForward;
+  if (el.ganttDaysBackInput) {
+    el.ganttDaysBackInput.value = String(boundedBack);
+  }
+  if (el.ganttDaysForwardInput) {
+    el.ganttDaysForwardInput.value = String(boundedForward);
+  }
   renderGantt();
 }
 
@@ -2669,10 +2686,12 @@ function renderLoginPanel() {
 }
 
 function syncGanttDaysControl() {
-  if (!el.ganttDaysCountInput) {
-    return;
+  if (el.ganttDaysBackInput) {
+    el.ganttDaysBackInput.value = String(clamp(toInt(ui.ganttDaysBackToShow), 0, 730));
   }
-  el.ganttDaysCountInput.value = String(clamp(toInt(ui.ganttDaysToShow), 14, 730));
+  if (el.ganttDaysForwardInput) {
+    el.ganttDaysForwardInput.value = String(clamp(toInt(ui.ganttDaysForwardToShow), 1, 730));
+  }
 }
 
 function renderTechnologySelects() {
@@ -3585,10 +3604,13 @@ function syncCalendarGanttScroll(container) {
 
 function buildGanttTimelineDates(orders) {
   const monday = mondayOf(new Date());
-  const defaultStart = isoDate(monday);
-  const daysToShow = clamp(toInt(ui.ganttDaysToShow), 14, 730);
+  const daysBack = clamp(toInt(ui.ganttDaysBackToShow), 0, 730);
+  const daysForward = clamp(toInt(ui.ganttDaysForwardToShow), 1, 730);
+  const startDate = new Date(monday);
+  startDate.setDate(startDate.getDate() - daysBack);
+  const defaultStart = isoDate(startDate);
   const endDate = new Date(monday);
-  endDate.setDate(endDate.getDate() + daysToShow - 1);
+  endDate.setDate(endDate.getDate() + daysForward - 1);
   const defaultEnd = isoDate(endDate);
   return dateRange(defaultStart, defaultEnd);
 }
