@@ -58,6 +58,7 @@ const state = {
   materialRules: {},
   databases: [],
   activeDatabaseKey: "default",
+  databaseAccessMap: {},
 };
 
 const ui = {
@@ -194,6 +195,9 @@ const el = {
   usersAdminHint: document.querySelector("#usersAdminHint"),
   userPermissionsGrid: document.querySelector("#userPermissionsGrid"),
   usersList: document.querySelector("#usersList"),
+  databaseAccessMatrixWrap: document.querySelector("#databaseAccessMatrixWrap"),
+  saveDatabaseAccessBtn: document.querySelector("#saveDatabaseAccessBtn"),
+  databaseAccessStatusText: document.querySelector("#databaseAccessStatusText"),
   settingsForm: document.querySelector("#settingsForm"),
   databaseSelect: document.querySelector("#databaseSelect"),
   switchDatabaseBtn: document.querySelector("#switchDatabaseBtn"),
@@ -351,6 +355,8 @@ function bindActions() {
   el.userRoleSelect?.addEventListener("change", syncUserPermissionsEnabledState);
   el.cancelUserEditBtn?.addEventListener("click", cancelUserEdit);
   el.usersList?.addEventListener("click", onUsersListClick);
+  el.databaseAccessMatrixWrap?.addEventListener("change", onDatabaseAccessMatrixChange);
+  el.saveDatabaseAccessBtn?.addEventListener("click", () => safeAction(saveDatabaseAccessMatrix));
   el.settingsForm.addEventListener("submit", (event) => {
     event.preventDefault();
     safeAction(saveSettings);
@@ -704,6 +710,7 @@ function resetLocalSessionState() {
   state.stationSettings = {};
   state.technologies = {};
   state.materialRules = {};
+  state.databaseAccessMap = {};
   if (!Array.isArray(state.databases) || state.databases.length === 0) {
     state.databases = [{ key: "default", name: "Domyslna baza", fileName: "planner.db", active: true, variant: false }];
   }
@@ -2031,6 +2038,7 @@ async function reloadState() {
   state.materialRules = normalizeMaterialRules(data.materialRules || {});
   state.databases = Array.isArray(data.databases) ? data.databases : [];
   state.activeDatabaseKey = String(data.activeDatabase || "default");
+  state.databaseAccessMap = normalizeDatabaseAccessMap(data.databaseAccessMap || {});
   recalculateOrders();
 }
 
@@ -2047,6 +2055,72 @@ function canCreateDatabaseVariants() {
     return true;
   }
   return Boolean(ui.currentUser?.canCreateDatabases);
+}
+
+function normalizeUserLoginKey(value) {
+  return String(value || "")
+    .trim()
+    .toLowerCase();
+}
+
+function databaseCatalogSource() {
+  if (Array.isArray(state.databases) && state.databases.length > 0) {
+    return state.databases;
+  }
+  return [{ key: "default", name: "Domyslna baza", fileName: "planner.db", active: true, variant: false }];
+}
+
+function normalizeDatabaseAccessMap(raw) {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    return {};
+  }
+  const validKeys = new Set(
+    databaseCatalogSource()
+      .map((item) => String(item?.key || "").trim())
+      .filter((item) => Boolean(item)),
+  );
+  const output = {};
+  Object.entries(raw).forEach(([rawLogin, rawKeys]) => {
+    const loginKey = normalizeUserLoginKey(rawLogin);
+    if (!loginKey) {
+      return;
+    }
+    const source = Array.isArray(rawKeys) ? rawKeys : [];
+    const keys = [];
+    source.forEach((entry) => {
+      const key = String(entry || "").trim();
+      if (!key) {
+        return;
+      }
+      if (validKeys.size > 0 && !validKeys.has(key)) {
+        return;
+      }
+      if (keys.includes(key)) {
+        return;
+      }
+      keys.push(key);
+    });
+    output[loginKey] = keys;
+  });
+  return output;
+}
+
+function allowedDatabaseKeysForUser(user) {
+  const source = databaseCatalogSource();
+  const allKeys = source.map((item) => String(item?.key || "")).filter((item) => Boolean(item));
+  const role = String(user?.role || "user").toLowerCase();
+  if (role === "admin") {
+    return allKeys;
+  }
+  const loginKey = normalizeUserLoginKey(user?.login);
+  if (!loginKey) {
+    return [];
+  }
+  const mapped = state.databaseAccessMap?.[loginKey];
+  if (!Array.isArray(mapped)) {
+    return allKeys;
+  }
+  return mapped.filter((key) => allKeys.includes(String(key || "")));
 }
 
 function normalizeVisibleSections(raw) {
@@ -2496,6 +2570,7 @@ function renderAll() {
   renderExecution();
   renderFeedbackPositions();
   renderUsers();
+  renderDatabaseAccessMatrix();
   renderDatabaseManager();
   syncSettingsForm();
   renderStationOvertimeEditor();
@@ -4185,7 +4260,16 @@ function renderUsers() {
     .map((user) => {
       const isUserAdmin = String(user.role || "user").toLowerCase() === "admin";
       const role = isUserAdmin ? "Admin" : "Uzytkownik";
-      const dbPermission = isUserAdmin || user.canCreateDatabases ? "Moze tworzyc bazy" : "Bez tworzenia baz";
+      const createDbPermission = isUserAdmin || user.canCreateDatabases ? "TAK" : "NIE";
+      const loginKey = normalizeUserLoginKey(user.login);
+      const hasExplicitMap = Object.prototype.hasOwnProperty.call(state.databaseAccessMap || {}, loginKey);
+      const allowedDbCount = allowedDatabaseKeysForUser(user).length;
+      const allDbCount = databaseCatalogSource().length;
+      const dbAccessLabel = isUserAdmin
+        ? "Wszystkie bazy (admin)"
+        : hasExplicitMap
+          ? `${allowedDbCount}/${allDbCount} przypisane`
+          : "Wszystkie (domyslnie)";
       const sections =
         isUserAdmin
           ? "Wszystkie"
@@ -4208,7 +4292,8 @@ function renderUsers() {
           <span> | Login: ${escapeHtml(user.login || "-")}</span>
           <span> | Dzial: ${escapeHtml(user.department || "-")}</span>
           <span> | Rola: ${escapeHtml(role)}</span>
-          <span> | Bazy: ${escapeHtml(dbPermission)}</span>
+          <span> | Dostep do baz: ${escapeHtml(dbAccessLabel)}</span>
+          <span> | Tworzenie baz: ${escapeHtml(createDbPermission)}</span>
           <span> | Widoki: ${escapeHtml(sections)}</span>
           ${actions}
         </li>
@@ -4216,6 +4301,160 @@ function renderUsers() {
     })
     .join("");
   el.usersList.innerHTML = `<ul>${rows}</ul>`;
+}
+
+function onDatabaseAccessMatrixChange(event) {
+  const checkbox = event.target.closest("input[data-db-access-checkbox='1']");
+  if (!checkbox) {
+    return;
+  }
+  if (el.databaseAccessStatusText) {
+    el.databaseAccessStatusText.textContent = "Niezapisane zmiany przypisan baz.";
+  }
+}
+
+function collectDatabaseAccessMapFromMatrix() {
+  const output = {};
+  if (!el.databaseAccessMatrixWrap) {
+    return output;
+  }
+  const rows = Array.from(el.databaseAccessMatrixWrap.querySelectorAll("tr[data-db-access-login]"));
+  rows.forEach((row) => {
+    const loginKey = normalizeUserLoginKey(row.dataset.dbAccessLogin || "");
+    const role = String(row.dataset.role || "user").toLowerCase();
+    if (!loginKey || role === "admin") {
+      return;
+    }
+    const checkedKeys = Array.from(row.querySelectorAll("input[data-db-access-checkbox='1']:checked"))
+      .map((node) => String(node.dataset.dbAccessKey || "").trim())
+      .filter((item) => Boolean(item));
+    output[loginKey] = checkedKeys;
+  });
+  return output;
+}
+
+async function saveDatabaseAccessMatrix() {
+  if (!isAdminUser()) {
+    throw new Error("Tylko administrator moze zapisywac przypisania baz.");
+  }
+  const payload = await api("/api/database-access", {
+    method: "PUT",
+    body: {
+      databaseAccessMap: collectDatabaseAccessMapFromMatrix(),
+    },
+  });
+  state.databaseAccessMap = normalizeDatabaseAccessMap(payload.databaseAccessMap || {});
+  state.databases = Array.isArray(payload.databases) ? payload.databases : state.databases;
+  state.activeDatabaseKey = String(payload.activeDatabase || state.activeDatabaseKey || "default");
+  syncLoginDatabaseSelect();
+  renderUsers();
+  renderDatabaseAccessMatrix();
+  renderDatabaseManager();
+  if (el.databaseAccessStatusText) {
+    el.databaseAccessStatusText.textContent = "Przypisania baz zostaly zapisane.";
+  }
+}
+
+function renderDatabaseAccessMatrix() {
+  if (!el.databaseAccessMatrixWrap) {
+    return;
+  }
+  if (!isLoggedIn()) {
+    el.databaseAccessMatrixWrap.innerHTML = "";
+    if (el.saveDatabaseAccessBtn) {
+      el.saveDatabaseAccessBtn.disabled = true;
+    }
+    if (el.databaseAccessStatusText) {
+      el.databaseAccessStatusText.textContent = "";
+    }
+    return;
+  }
+  const admin = isAdminUser();
+  if (!admin) {
+    el.databaseAccessMatrixWrap.innerHTML = "<p>Tylko administrator moze edytowac przypisania uzytkownikow do baz.</p>";
+    if (el.saveDatabaseAccessBtn) {
+      el.saveDatabaseAccessBtn.disabled = true;
+    }
+    if (el.databaseAccessStatusText) {
+      el.databaseAccessStatusText.textContent = "";
+    }
+    return;
+  }
+
+  const users = Array.isArray(state.users)
+    ? state.users.filter((user) => String(user?.login || "").trim().length > 0)
+    : [];
+  const databases = databaseCatalogSource();
+  if (users.length === 0) {
+    el.databaseAccessMatrixWrap.innerHTML = "<p>Brak uzytkownikow z loginem.</p>";
+    if (el.saveDatabaseAccessBtn) {
+      el.saveDatabaseAccessBtn.disabled = true;
+    }
+    return;
+  }
+  if (databases.length === 0) {
+    el.databaseAccessMatrixWrap.innerHTML = "<p>Brak dostepnych baz.</p>";
+    if (el.saveDatabaseAccessBtn) {
+      el.saveDatabaseAccessBtn.disabled = true;
+    }
+    return;
+  }
+
+  const head = databases
+    .map((dbItem) => `<th>${escapeHtml(dbItem.name || dbItem.key || "-")}</th>`)
+    .join("");
+  const rows = users
+    .map((user) => {
+      const isUserAdmin = String(user.role || "user").toLowerCase() === "admin";
+      const loginKey = normalizeUserLoginKey(user.login);
+      const allowedSet = new Set(allowedDatabaseKeysForUser(user));
+      const checkboxes = databases
+        .map((dbItem) => {
+          const dbKey = String(dbItem.key || "");
+          const checked = allowedSet.has(dbKey);
+          const disabled = isUserAdmin ? "disabled" : "";
+          return `<td class="db-access-cell">
+              <input
+                type="checkbox"
+                data-db-access-checkbox="1"
+                data-db-access-login="${escapeHtml(loginKey)}"
+                data-db-access-key="${escapeHtml(dbKey)}"
+                ${checked ? "checked" : ""}
+                ${disabled}
+              />
+            </td>`;
+        })
+        .join("");
+      const roleLabel = isUserAdmin ? "Admin" : "Uzytkownik";
+      return `<tr data-db-access-login="${escapeHtml(loginKey)}" data-role="${escapeHtml(String(user.role || "user"))}">
+          <th class="db-access-user-col">
+            <div>${escapeHtml(user.name || "-")}</div>
+            <small>${escapeHtml(user.login || "-")} | ${escapeHtml(roleLabel)}</small>
+          </th>
+          ${checkboxes}
+        </tr>`;
+    })
+    .join("");
+
+  el.databaseAccessMatrixWrap.innerHTML = `
+    <div class="table-wrap database-access-wrap">
+      <table class="database-access-table">
+        <thead>
+          <tr>
+            <th class="db-access-user-col">Uzytkownik</th>
+            ${head}
+          </tr>
+        </thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>
+  `;
+  if (el.saveDatabaseAccessBtn) {
+    el.saveDatabaseAccessBtn.disabled = false;
+  }
+  if (el.databaseAccessStatusText && !el.databaseAccessStatusText.textContent.trim()) {
+    el.databaseAccessStatusText.textContent = "Admin ma zawsze dostep do wszystkich baz.";
+  }
 }
 
 function setUserPermissionsSelection(selected) {

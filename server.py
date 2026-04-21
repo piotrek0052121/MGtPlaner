@@ -29,6 +29,12 @@ ACTIVE_DB_KEY_PATH = Path(os.getenv("PLANNER_ACTIVE_DB_FILE", str(BASE_DB_PATH.p
 if not ACTIVE_DB_KEY_PATH.is_absolute():
     ACTIVE_DB_KEY_PATH = (BASE_DIR / ACTIVE_DB_KEY_PATH).resolve()
 
+DATABASE_ACCESS_MAP_PATH = Path(
+    os.getenv("PLANNER_DB_ACCESS_MAP_FILE", str(BASE_DB_PATH.parent / "database_access_map.json"))
+)
+if not DATABASE_ACCESS_MAP_PATH.is_absolute():
+    DATABASE_ACCESS_MAP_PATH = (BASE_DIR / DATABASE_ACCESS_MAP_PATH).resolve()
+
 DEFAULT_DB_KEY = "default"
 
 app = Flask(__name__, static_folder=str(BASE_DIR), static_url_path="")
@@ -161,6 +167,7 @@ def ensure_database_storage():
     BASE_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     DB_VARIANTS_DIR.mkdir(parents=True, exist_ok=True)
     ACTIVE_DB_KEY_PATH.parent.mkdir(parents=True, exist_ok=True)
+    DATABASE_ACCESS_MAP_PATH.parent.mkdir(parents=True, exist_ok=True)
 
 
 def get_active_database_key():
@@ -236,6 +243,123 @@ def list_database_catalog(active_key=None):
             }
         )
     return output
+
+
+def list_database_keys():
+    ensure_database_storage()
+    keys = [DEFAULT_DB_KEY]
+    for file_path in sorted(DB_VARIANTS_DIR.glob("*.db"), key=lambda item: item.name.lower()):
+        keys.append(f"variant:{file_path.stem}")
+    return keys
+
+
+def normalize_login_key(value):
+    return str(value or "").strip().lower()
+
+
+def normalize_database_access_map(raw_map, known_keys=None):
+    allowed_keys = set(known_keys or list_database_keys())
+    output = {}
+    if not isinstance(raw_map, dict):
+        return output
+
+    for raw_login, raw_keys in raw_map.items():
+        login_key = normalize_login_key(raw_login)
+        if not login_key:
+            continue
+        keys_source = raw_keys if isinstance(raw_keys, list) else []
+        valid_keys = []
+        for raw_key in keys_source:
+            key = str(raw_key or "").strip()
+            if not key or key not in allowed_keys:
+                continue
+            if key in valid_keys:
+                continue
+            valid_keys.append(key)
+        output[login_key] = valid_keys
+    return output
+
+
+def load_database_access_map():
+    ensure_database_storage()
+    if not DATABASE_ACCESS_MAP_PATH.exists():
+        return {}
+    try:
+        parsed = json.loads(DATABASE_ACCESS_MAP_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return normalize_database_access_map(parsed, list_database_keys())
+
+
+def save_database_access_map(raw_map):
+    ensure_database_storage()
+    normalized = normalize_database_access_map(raw_map, list_database_keys())
+    DATABASE_ACCESS_MAP_PATH.write_text(
+        json.dumps(normalized, ensure_ascii=True, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+    return normalized
+
+
+def can_user_access_database(user, database_key, access_map=None):
+    key = str(database_key or "").strip() or DEFAULT_DB_KEY
+    role = str((user or {}).get("role", "")).strip().lower()
+    if role == "admin":
+        return True
+    login_key = normalize_login_key((user or {}).get("login"))
+    if not login_key:
+        return False
+    resolved_access_map = access_map if isinstance(access_map, dict) else load_database_access_map()
+    allowed = resolved_access_map.get(login_key)
+    if allowed is None:
+        return True
+    return key in allowed
+
+
+def list_database_catalog_for_user(user, active_key=None, access_map=None):
+    catalog = list_database_catalog(active_key)
+    role = str((user or {}).get("role", "")).strip().lower()
+    if role == "admin":
+        return catalog
+    login_key = normalize_login_key((user or {}).get("login"))
+    if not login_key:
+        return []
+    resolved_access_map = access_map if isinstance(access_map, dict) else load_database_access_map()
+    allowed = resolved_access_map.get(login_key)
+    if allowed is None:
+        return catalog
+    allowed_set = set(allowed)
+    return [item for item in catalog if str(item.get("key") or "") in allowed_set]
+
+
+def rename_database_access_login(old_login, new_login):
+    old_key = normalize_login_key(old_login)
+    new_key = normalize_login_key(new_login)
+    if not old_key or not new_key or old_key == new_key:
+        return
+    access_map = load_database_access_map()
+    if old_key not in access_map:
+        return
+    old_values = list(access_map.pop(old_key))
+    merged = []
+    for key in list(access_map.get(new_key, [])) + old_values:
+        key_norm = str(key or "").strip()
+        if not key_norm or key_norm in merged:
+            continue
+        merged.append(key_norm)
+    access_map[new_key] = merged
+    save_database_access_map(access_map)
+
+
+def remove_database_access_login(login):
+    login_key = normalize_login_key(login)
+    if not login_key:
+        return
+    access_map = load_database_access_map()
+    if login_key not in access_map:
+        return
+    access_map.pop(login_key, None)
+    save_database_access_map(access_map)
 
 
 def db_connect(path):
@@ -779,8 +903,15 @@ def initialize(target_db_path=None):
             ],
         )
 
-    admin_exists = connection.execute("SELECT id FROM users WHERE LOWER(COALESCE(login, '')) = 'admin' LIMIT 1").fetchone()
-    if not admin_exists:
+    admin_row = connection.execute(
+        """
+        SELECT id, name, password_hash, role, permissions_json, active, can_create_databases
+        FROM users
+        WHERE LOWER(COALESCE(login, '')) = 'admin'
+        LIMIT 1
+        """
+    ).fetchone()
+    if not admin_row:
         connection.execute(
             """
             INSERT INTO users (id, name, department, login, password_hash, role, permissions_json, active)
@@ -797,7 +928,31 @@ def initialize(target_db_path=None):
                 1,
             ),
         )
-        connection.execute("UPDATE users SET can_create_databases = 1 WHERE LOWER(COALESCE(login, '')) = 'admin'")
+    else:
+        admin_name = str(admin_row["name"] or "").strip() or "Administrator"
+        admin_hash = str(admin_row["password_hash"] or "").strip() or hash_password("admin")
+        admin_role = "admin"
+        try:
+            admin_sections = normalize_visible_sections(json.loads(admin_row["permissions_json"] or "[]"))
+        except json.JSONDecodeError:
+            admin_sections = []
+        if len(admin_sections) == 0:
+            admin_sections = USER_VISIBLE_SECTIONS[:]
+        connection.execute(
+            """
+            UPDATE users
+            SET name = ?, role = ?, password_hash = ?, permissions_json = ?, active = 1, can_create_databases = 1
+            WHERE id = ?
+            """,
+            (
+                admin_name,
+                admin_role,
+                admin_hash,
+                json.dumps(admin_sections, ensure_ascii=True),
+                admin_row["id"],
+            ),
+        )
+    connection.execute("UPDATE users SET can_create_databases = 1 WHERE LOWER(COALESCE(login, '')) = 'admin'")
 
     tech_count = connection.execute("SELECT COUNT(*) AS cnt FROM technology_allocations").fetchone()["cnt"]
     if tech_count == 0:
@@ -1614,6 +1769,10 @@ def require_api_authentication():
     user = current_authenticated_user()
     if not user:
         return jsonify({"error": "Sesja wygasla. Zaloguj sie ponownie."}), 401
+    if not can_user_access_database(user, get_request_database_key()):
+        session.pop("user_id", None)
+        g.current_user = None
+        return jsonify({"error": "Brak dostepu do aktualnej bazy. Zaloguj sie ponownie."}), 403
     return None
 
 
@@ -1624,6 +1783,7 @@ def index():
 
 @app.get("/api/bootstrap")
 def api_bootstrap():
+    user = current_authenticated_user()
     connection = db()
     if sync_all_order_statuses(connection):
         connection.commit()
@@ -1637,8 +1797,9 @@ def api_bootstrap():
         "stationSettings": get_station_settings(connection),
         "materialRules": get_material_rules(connection),
         "technologies": get_technology_allocations(connection),
-        "databases": list_database_catalog(selected_key),
+        "databases": list_database_catalog_for_user(user, selected_key),
         "activeDatabase": selected_key,
+        "databaseAccessMap": load_database_access_map() if str((user or {}).get("role", "")).strip().lower() == "admin" else {},
     }
     connection.close()
     return jsonify(payload)
@@ -2389,6 +2550,9 @@ def api_auth_login():
         return jsonify({"error": "Nieprawidlowy login lub haslo."}), 401
 
     user_payload = user_payload_from_row(row)
+    access_map = load_database_access_map()
+    if not can_user_access_database(user_payload, database_key, access_map):
+        return jsonify({"error": "Brak dostepu do wybranej bazy."}), 403
     session.clear()
     set_request_database_key(database_key)
     session["user_id"] = user_payload["id"]
@@ -2398,7 +2562,7 @@ def api_auth_login():
             "ok": True,
             "user": user_payload,
             "activeDatabase": get_request_database_key(),
-            "databases": list_database_catalog(get_request_database_key()),
+            "databases": list_database_catalog_for_user(user_payload, get_request_database_key(), access_map),
         }
     )
 
@@ -2408,12 +2572,18 @@ def api_auth_session():
     user = current_authenticated_user()
     if not user:
         return jsonify({"error": "Brak aktywnej sesji."}), 401
+    selected_key = get_request_database_key()
+    access_map = load_database_access_map()
+    if not can_user_access_database(user, selected_key, access_map):
+        session.pop("user_id", None)
+        g.current_user = None
+        return jsonify({"error": "Brak dostepu do aktualnej bazy. Zaloguj sie ponownie."}), 403
     return jsonify(
         {
             "ok": True,
             "user": user,
-            "activeDatabase": get_request_database_key(),
-            "databases": list_database_catalog(get_request_database_key()),
+            "activeDatabase": selected_key,
+            "databases": list_database_catalog_for_user(user, selected_key, access_map),
         }
     )
 
@@ -2490,8 +2660,46 @@ def api_public_databases():
 
 @app.get("/api/databases")
 def api_get_databases():
+    user = current_authenticated_user()
     selected_key = get_request_database_key()
-    return jsonify({"databases": list_database_catalog(selected_key), "activeDatabase": selected_key})
+    return jsonify({"databases": list_database_catalog_for_user(user, selected_key), "activeDatabase": selected_key})
+
+
+@app.get("/api/database-access")
+def api_get_database_access():
+    deny = require_admin_user_management()
+    if deny:
+        return deny
+    selected_key = get_request_database_key()
+    return jsonify(
+        {
+            "ok": True,
+            "databaseAccessMap": load_database_access_map(),
+            "databases": list_database_catalog(selected_key),
+            "activeDatabase": selected_key,
+        }
+    )
+
+
+@app.put("/api/database-access")
+def api_update_database_access():
+    deny = require_admin_user_management()
+    if deny:
+        return deny
+    data = request.get_json(force=True)
+    raw_map = data.get("databaseAccessMap")
+    if raw_map is None:
+        raw_map = data.get("map", {})
+    normalized = save_database_access_map(raw_map)
+    selected_key = get_request_database_key()
+    return jsonify(
+        {
+            "ok": True,
+            "databaseAccessMap": normalized,
+            "databases": list_database_catalog(selected_key),
+            "activeDatabase": selected_key,
+        }
+    )
 
 
 @app.post("/api/databases")
@@ -2511,6 +2719,7 @@ def api_create_database():
     if target_path.exists():
         return jsonify({"error": "Baza o tej nazwie juz istnieje."}), 409
 
+    creator_login = str((user or {}).get("login", "")).strip()
     source_connection = db()
     initialize(target_path)
     target_connection = db_connect(target_path)
@@ -2545,8 +2754,70 @@ def api_create_database():
                 for row in source_users
             ],
         )
-        target_connection.execute("UPDATE users SET can_create_databases = 1 WHERE LOWER(COALESCE(role, '')) = 'admin'")
-        target_connection.commit()
+    if creator_login:
+        creator_row = source_connection.execute(
+            """
+            SELECT id, name, department, login, password_hash, role, permissions_json, active, can_create_databases
+            FROM users
+            WHERE LOWER(COALESCE(login, '')) = LOWER(?)
+            LIMIT 1
+            """,
+            (creator_login,),
+        ).fetchone()
+        if creator_row:
+            existing_creator = target_connection.execute(
+                "SELECT id FROM users WHERE LOWER(COALESCE(login, '')) = LOWER(?) LIMIT 1",
+                (creator_login,),
+            ).fetchone()
+            creator_payload = (
+                str(creator_row["name"] or "").strip() or "Uzytkownik",
+                str(creator_row["department"] or "").strip() or "Dokumentacja",
+                str(creator_row["password_hash"] or "").strip() or hash_password("admin"),
+                str(creator_row["role"] or "user").strip().lower() if str(creator_row["role"] or "").strip() else "user",
+                str(creator_row["permissions_json"] or "[]"),
+                1,
+                1 if bool(creator_row["can_create_databases"]) else 0,
+            )
+            if existing_creator:
+                target_connection.execute(
+                    """
+                    UPDATE users
+                    SET name = ?, department = ?, password_hash = ?, role = ?, permissions_json = ?, active = ?, can_create_databases = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        creator_payload[0],
+                        creator_payload[1],
+                        creator_payload[2],
+                        creator_payload[3],
+                        creator_payload[4],
+                        creator_payload[5],
+                        creator_payload[6],
+                        existing_creator["id"],
+                    ),
+                )
+            else:
+                target_connection.execute(
+                    """
+                    INSERT INTO users (
+                      id, name, department, login, password_hash, role, permissions_json, active, can_create_databases
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        str(creator_row["id"] or uuid.uuid4()),
+                        creator_payload[0],
+                        creator_payload[1],
+                        creator_login,
+                        creator_payload[2],
+                        creator_payload[3],
+                        creator_payload[4],
+                        creator_payload[5],
+                        creator_payload[6],
+                    ),
+                )
+    target_connection.execute("UPDATE users SET can_create_databases = 1 WHERE LOWER(COALESCE(role, '')) = 'admin'")
+    target_connection.commit()
     target_connection.close()
     source_connection.close()
 
@@ -2562,7 +2833,10 @@ def api_create_database():
             "ok": True,
             "createdDatabase": database_key,
             "activeDatabase": get_request_database_key(),
-            "databases": list_database_catalog(get_request_database_key()),
+            "databases": list_database_catalog_for_user(
+                current_authenticated_user(),
+                get_request_database_key(),
+            ),
             "requiresRelogin": relogin_required,
         }
     )
@@ -2578,7 +2852,11 @@ def api_set_active_database():
     if not target_path.exists():
         return jsonify({"error": "Wybrana baza nie istnieje."}), 404
 
-    current_login = str((current_authenticated_user() or {}).get("login", "")).strip()
+    user = current_authenticated_user() or {}
+    if not can_user_access_database(user, database_key):
+        return jsonify({"error": "Brak dostepu do wybranej bazy."}), 403
+
+    current_login = str((user or {}).get("login", "")).strip()
     initialize(target_path)
     set_request_database_key(database_key)
     relogin_required = not sync_session_after_database_switch(current_login, database_key)
@@ -2587,7 +2865,10 @@ def api_set_active_database():
         {
             "ok": True,
             "activeDatabase": get_request_database_key(),
-            "databases": list_database_catalog(get_request_database_key()),
+            "databases": list_database_catalog_for_user(
+                current_authenticated_user(),
+                get_request_database_key(),
+            ),
             "requiresRelogin": relogin_required,
         }
     )
@@ -2676,10 +2957,11 @@ def api_update_user(user_id):
         return jsonify({"error": "Wybierz przynajmniej jedna sekcje widoczna dla uzytkownika."}), 400
 
     connection = db()
-    row = connection.execute("SELECT id FROM users WHERE id = ?", (user_id,)).fetchone()
+    row = connection.execute("SELECT id, login FROM users WHERE id = ?", (user_id,)).fetchone()
     if not row:
         connection.close()
         return jsonify({"error": "Nie znaleziono uzytkownika."}), 404
+    previous_login = str(row["login"] or "").strip()
 
     exists = connection.execute(
         "SELECT id FROM users WHERE LOWER(COALESCE(login, '')) = LOWER(?) AND id <> ?",
@@ -2726,6 +3008,8 @@ def api_update_user(user_id):
         )
     connection.commit()
     connection.close()
+    if normalize_login_key(previous_login) != normalize_login_key(login):
+        rename_database_access_login(previous_login, login)
     return jsonify({"ok": True})
 
 
@@ -2748,6 +3032,7 @@ def api_delete_user(user_id):
     connection.execute("DELETE FROM users WHERE id = ?", (user_id,))
     connection.commit()
     connection.close()
+    remove_database_access_login(row["login"])
     return jsonify({"ok": True})
 
 

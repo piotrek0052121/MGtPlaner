@@ -1680,6 +1680,51 @@ pre {
   line-height: 1.4;
 }
 
+.database-access-wrap {
+  margin-top: 6px;
+}
+
+.database-access-table {
+  width: 100%;
+  min-width: 680px;
+  border-collapse: collapse;
+}
+
+.database-access-table th,
+.database-access-table td {
+  border: 1px solid #d3d9de;
+  padding: 8px 10px;
+  text-align: center;
+  background: #ffffff;
+}
+
+.database-access-table thead th {
+  background: #ebf0f4;
+  font-weight: 700;
+}
+
+.database-access-table .db-access-user-col {
+  min-width: 220px;
+  text-align: left;
+  background: #f7fbef;
+}
+
+.database-access-table .db-access-user-col small {
+  display: block;
+  color: #506170;
+  margin-top: 2px;
+}
+
+.database-access-table .db-access-cell input[type="checkbox"] {
+  width: 18px;
+  height: 18px;
+}
+
+#databaseAccessStatusText {
+  color: #2f4658;
+  font-weight: 600;
+}
+
 .user-actions {
   display: inline-flex;
   gap: 8px;
