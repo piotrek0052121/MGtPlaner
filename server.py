@@ -9,7 +9,7 @@ from datetime import date, datetime
 from pathlib import Path
 from urllib.parse import quote
 
-from flask import Flask, Response, g, jsonify, request, session
+from flask import Flask, Response, g, has_request_context, jsonify, request, session
 
 try:
     from openpyxl import load_workbook
@@ -181,23 +181,46 @@ def set_active_database_key(key):
     ACTIVE_DB_KEY_PATH.write_text(str(key), encoding="utf-8")
 
 
+def get_request_database_key():
+    session_key = ""
+    if has_request_context():
+        session_key = str(session.get("db_key", "")).strip()
+    session_path = database_key_to_path(session_key)
+    if session_key and session_path and session_path.exists():
+        return session_key
+    return get_active_database_key()
+
+
+def set_request_database_key(key):
+    if not has_request_context():
+        return
+    normalized = str(key or "").strip()
+    if not normalized:
+        session.pop("db_key", None)
+        return
+    path = database_key_to_path(normalized)
+    if not path or not path.exists():
+        raise ValueError("Nie znaleziono wskazanej bazy danych.")
+    session["db_key"] = normalized
+
+
 def get_current_database_path():
-    key = get_active_database_key()
+    key = get_request_database_key()
     path = database_key_to_path(key)
     if not path:
         return BASE_DB_PATH
     return path
 
 
-def list_database_catalog():
+def list_database_catalog(active_key=None):
     ensure_database_storage()
-    active_key = get_active_database_key()
+    resolved_active_key = str(active_key or "").strip() or get_request_database_key()
     output = [
         {
             "key": DEFAULT_DB_KEY,
             "name": "Domyslna baza",
             "fileName": BASE_DB_PATH.name,
-            "active": active_key == DEFAULT_DB_KEY,
+            "active": resolved_active_key == DEFAULT_DB_KEY,
             "variant": False,
         }
     ]
@@ -208,7 +231,7 @@ def list_database_catalog():
                 "key": key,
                 "name": file_path.stem,
                 "fileName": file_path.name,
-                "active": active_key == key,
+                "active": resolved_active_key == key,
                 "variant": True,
             }
         )
@@ -539,9 +562,12 @@ def initialize(target_db_path=None):
     ensure_column(connection, "users", "role", "TEXT NOT NULL DEFAULT 'user'")
     ensure_column(connection, "users", "permissions_json", "TEXT NOT NULL DEFAULT '[]'")
     ensure_column(connection, "users", "active", "INTEGER NOT NULL DEFAULT 1")
+    ensure_column(connection, "users", "can_create_databases", "INTEGER NOT NULL DEFAULT 0")
     connection.execute("UPDATE users SET role = COALESCE(NULLIF(role, ''), 'user')")
     connection.execute("UPDATE users SET permissions_json = COALESCE(NULLIF(permissions_json, ''), '[]')")
     connection.execute("UPDATE users SET active = COALESCE(active, 1)")
+    connection.execute("UPDATE users SET can_create_databases = COALESCE(can_create_databases, 0)")
+    connection.execute("UPDATE users SET can_create_databases = 1 WHERE LOWER(COALESCE(role, '')) = 'admin'")
     connection.execute("UPDATE users SET department = 'Dokumentacja' WHERE department = 'Planowanie'")
 
     connection.execute(
@@ -738,10 +764,18 @@ def initialize(target_db_path=None):
     user_count = connection.execute("SELECT COUNT(*) AS cnt FROM users").fetchone()["cnt"]
     if user_count == 0:
         connection.executemany(
-            "INSERT INTO users (id, name, department, role, permissions_json, active) VALUES (?, ?, ?, ?, ?, ?)",
+            "INSERT INTO users (id, name, department, role, permissions_json, active, can_create_databases) VALUES (?, ?, ?, ?, ?, ?, ?)",
             [
-                (str(uuid.uuid4()), "Jan Brygadzista", "Maszynownia", "user", json.dumps(["feedback"], ensure_ascii=True), 1),
-                (str(uuid.uuid4()), "Anna Planistka", "Dokumentacja", "user", json.dumps(["orders", "gantt", "reports", "execution"], ensure_ascii=True), 1),
+                (str(uuid.uuid4()), "Jan Brygadzista", "Maszynownia", "user", json.dumps(["feedback"], ensure_ascii=True), 1, 0),
+                (
+                    str(uuid.uuid4()),
+                    "Anna Planistka",
+                    "Dokumentacja",
+                    "user",
+                    json.dumps(["orders", "gantt", "reports", "execution"], ensure_ascii=True),
+                    1,
+                    0,
+                ),
             ],
         )
 
@@ -763,6 +797,7 @@ def initialize(target_db_path=None):
                 1,
             ),
         )
+        connection.execute("UPDATE users SET can_create_databases = 1 WHERE LOWER(COALESCE(login, '')) = 'admin'")
 
     tech_count = connection.execute("SELECT COUNT(*) AS cnt FROM technology_allocations").fetchone()["cnt"]
     if tech_count == 0:
@@ -878,6 +913,7 @@ def user_payload_from_row(row):
         "role": data.get("role") or "user",
         "visibleSections": visible_sections,
         "active": bool(data.get("active", 1)),
+        "canCreateDatabases": bool(data.get("can_create_databases", 0)),
     }
 
 
@@ -886,7 +922,7 @@ def get_active_user_by_id(connection, user_id):
         return None
     row = connection.execute(
         """
-        SELECT id, name, department, login, role, permissions_json, active
+        SELECT id, name, department, login, role, permissions_json, active, can_create_databases
         FROM users
         WHERE id = ? AND active = 1
         LIMIT 1
@@ -898,7 +934,7 @@ def get_active_user_by_id(connection, user_id):
 
 def get_users(connection):
     rows = connection.execute(
-        "SELECT id, name, department, login, role, permissions_json, active FROM users ORDER BY name"
+        "SELECT id, name, department, login, role, permissions_json, active, can_create_databases FROM users ORDER BY name"
     ).fetchall()
     return [user_payload_from_row(item) for item in rows]
 
@@ -1546,6 +1582,7 @@ PUBLIC_API_PATHS = {
     "/api/auth/login",
     "/api/auth/logout",
     "/api/auth/session",
+    "/api/public/databases",
 }
 
 
@@ -1590,6 +1627,7 @@ def api_bootstrap():
     connection = db()
     if sync_all_order_statuses(connection):
         connection.commit()
+    selected_key = get_request_database_key()
     payload = {
         "orders": get_orders(connection),
         "feedbackEvents": get_feedback_events(connection),
@@ -1599,8 +1637,8 @@ def api_bootstrap():
         "stationSettings": get_station_settings(connection),
         "materialRules": get_material_rules(connection),
         "technologies": get_technology_allocations(connection),
-        "databases": list_database_catalog(),
-        "activeDatabase": get_active_database_key(),
+        "databases": list_database_catalog(selected_key),
+        "activeDatabase": selected_key,
     }
     connection.close()
     return jsonify(payload)
@@ -2321,13 +2359,20 @@ def api_auth_login():
     data = request.get_json(force=True)
     login = str(data.get("login", "")).strip()
     password = str(data.get("password", ""))
+    database_key = str(data.get("databaseKey", "")).strip() or get_request_database_key()
     if not login or not password:
         return jsonify({"error": "Podaj login i haslo."}), 400
+    target_path = database_key_to_path(database_key)
+    if not target_path:
+        return jsonify({"error": "Nieprawidlowy identyfikator bazy."}), 400
+    if not target_path.exists():
+        return jsonify({"error": "Wybrana baza nie istnieje."}), 404
+    initialize(target_path)
 
-    connection = db()
+    connection = db_connect(target_path)
     row = connection.execute(
         """
-        SELECT id, name, department, login, password_hash, role, permissions_json, active
+        SELECT id, name, department, login, password_hash, role, permissions_json, active, can_create_databases
         FROM users
         WHERE LOWER(COALESCE(login, '')) = LOWER(?)
         LIMIT 1
@@ -2345,9 +2390,17 @@ def api_auth_login():
 
     user_payload = user_payload_from_row(row)
     session.clear()
+    set_request_database_key(database_key)
     session["user_id"] = user_payload["id"]
     g.current_user = user_payload
-    return jsonify({"ok": True, "user": user_payload})
+    return jsonify(
+        {
+            "ok": True,
+            "user": user_payload,
+            "activeDatabase": get_request_database_key(),
+            "databases": list_database_catalog(get_request_database_key()),
+        }
+    )
 
 
 @app.get("/api/auth/session")
@@ -2355,12 +2408,21 @@ def api_auth_session():
     user = current_authenticated_user()
     if not user:
         return jsonify({"error": "Brak aktywnej sesji."}), 401
-    return jsonify({"ok": True, "user": user})
+    return jsonify(
+        {
+            "ok": True,
+            "user": user,
+            "activeDatabase": get_request_database_key(),
+            "databases": list_database_catalog(get_request_database_key()),
+        }
+    )
 
 
 @app.post("/api/auth/logout")
 def api_auth_logout():
+    selected_db = get_request_database_key()
     session.clear()
+    set_request_database_key(selected_db)
     g.current_user = None
     return jsonify({"ok": True})
 
@@ -2373,16 +2435,29 @@ def require_admin():
     return None
 
 
-def sync_session_after_database_switch(preferred_login):
+def can_user_create_databases(user):
+    role = str((user or {}).get("role", "")).strip().lower()
+    if role == "admin":
+        return True
+    return bool((user or {}).get("canCreateDatabases"))
+
+
+def sync_session_after_database_switch(preferred_login, database_key=None):
     login = str(preferred_login or "").strip()
-    if not login:
-        session.clear()
+    key = str(database_key or "").strip() or get_request_database_key()
+    target_path = database_key_to_path(key)
+    if not target_path or not target_path.exists():
+        session.pop("user_id", None)
         g.current_user = None
         return False
-    connection = db()
+    if not login:
+        session.pop("user_id", None)
+        g.current_user = None
+        return False
+    connection = db_connect(target_path)
     row = connection.execute(
         """
-        SELECT id, name, department, login, role, permissions_json, active
+        SELECT id, name, department, login, role, permissions_json, active, can_create_databases
         FROM users
         WHERE LOWER(COALESCE(login, '')) = LOWER(?) AND active = 1
         LIMIT 1
@@ -2391,28 +2466,39 @@ def sync_session_after_database_switch(preferred_login):
     ).fetchone()
     connection.close()
     if not row:
-        session.clear()
+        session.pop("user_id", None)
         g.current_user = None
         return False
     user_payload = user_payload_from_row(row)
+    set_request_database_key(key)
     session["user_id"] = user_payload["id"]
     g.current_user = user_payload
     return True
 
 
+@app.get("/api/public/databases")
+def api_public_databases():
+    selected_key = get_request_database_key()
+    return jsonify(
+        {
+            "ok": True,
+            "activeDatabase": selected_key,
+            "databases": list_database_catalog(selected_key),
+        }
+    )
+
+
 @app.get("/api/databases")
 def api_get_databases():
-    deny = require_admin()
-    if deny:
-        return deny
-    return jsonify({"databases": list_database_catalog(), "activeDatabase": get_active_database_key()})
+    selected_key = get_request_database_key()
+    return jsonify({"databases": list_database_catalog(selected_key), "activeDatabase": selected_key})
 
 
 @app.post("/api/databases")
 def api_create_database():
-    deny = require_admin()
-    if deny:
-        return deny
+    user = current_authenticated_user()
+    if not can_user_create_databases(user):
+        return jsonify({"error": "Brak uprawnien do tworzenia baz."}), 403
     data = request.get_json(force=True)
     name = str(data.get("name", "")).strip()
     slug = sanitize_variant_slug(name)
@@ -2425,20 +2511,58 @@ def api_create_database():
     if target_path.exists():
         return jsonify({"error": "Baza o tej nazwie juz istnieje."}), 409
 
+    source_connection = db()
     initialize(target_path)
+    target_connection = db_connect(target_path)
+    source_users = source_connection.execute(
+        """
+        SELECT id, name, department, login, password_hash, role, permissions_json, active, can_create_databases
+        FROM users
+        WHERE COALESCE(login, '') <> ''
+        """
+    ).fetchall()
+    if source_users:
+        target_connection.execute("DELETE FROM users")
+        target_connection.executemany(
+            """
+            INSERT INTO users (
+              id, name, department, login, password_hash, role, permissions_json, active, can_create_databases
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    str(row["id"] or uuid.uuid4()),
+                    str(row["name"] or "").strip() or "Uzytkownik",
+                    str(row["department"] or "").strip() or "Dokumentacja",
+                    str(row["login"] or "").strip(),
+                    str(row["password_hash"] or "").strip(),
+                    str(row["role"] or "user").strip().lower() if str(row["role"] or "").strip() else "user",
+                    str(row["permissions_json"] or "[]"),
+                    1 if bool(row["active"]) else 0,
+                    1 if bool(row["can_create_databases"]) else 0,
+                )
+                for row in source_users
+            ],
+        )
+        target_connection.execute("UPDATE users SET can_create_databases = 1 WHERE LOWER(COALESCE(role, '')) = 'admin'")
+        target_connection.commit()
+    target_connection.close()
+    source_connection.close()
+
     activate = to_bool(data.get("activate"))
     relogin_required = False
     if activate:
         current_login = str((current_authenticated_user() or {}).get("login", "")).strip()
-        set_active_database_key(database_key)
-        relogin_required = not sync_session_after_database_switch(current_login)
+        set_request_database_key(database_key)
+        relogin_required = not sync_session_after_database_switch(current_login, database_key)
 
     return jsonify(
         {
             "ok": True,
             "createdDatabase": database_key,
-            "activeDatabase": get_active_database_key(),
-            "databases": list_database_catalog(),
+            "activeDatabase": get_request_database_key(),
+            "databases": list_database_catalog(get_request_database_key()),
             "requiresRelogin": relogin_required,
         }
     )
@@ -2446,9 +2570,6 @@ def api_create_database():
 
 @app.put("/api/databases/active")
 def api_set_active_database():
-    deny = require_admin()
-    if deny:
-        return deny
     data = request.get_json(force=True)
     database_key = str(data.get("key", "")).strip()
     target_path = database_key_to_path(database_key)
@@ -2458,15 +2579,15 @@ def api_set_active_database():
         return jsonify({"error": "Wybrana baza nie istnieje."}), 404
 
     current_login = str((current_authenticated_user() or {}).get("login", "")).strip()
-    set_active_database_key(database_key)
     initialize(target_path)
-    relogin_required = not sync_session_after_database_switch(current_login)
+    set_request_database_key(database_key)
+    relogin_required = not sync_session_after_database_switch(current_login, database_key)
 
     return jsonify(
         {
             "ok": True,
-            "activeDatabase": get_active_database_key(),
-            "databases": list_database_catalog(),
+            "activeDatabase": get_request_database_key(),
+            "databases": list_database_catalog(get_request_database_key()),
             "requiresRelogin": relogin_required,
         }
     )
@@ -2495,9 +2616,11 @@ def api_create_user():
     department = str(data.get("department", "Dokumentacja")).strip() or "Dokumentacja"
     role = str(data.get("role", "user")).strip().lower()
     role = "admin" if role == "admin" else "user"
+    can_create_databases = to_bool(data.get("canCreateDatabases"))
     visible_sections = normalize_visible_sections(data.get("visibleSections"))
     if role == "admin":
         visible_sections = USER_VISIBLE_SECTIONS[:]
+        can_create_databases = True
     elif len(visible_sections) == 0:
         return jsonify({"error": "Wybierz przynajmniej jedna sekcje widoczna dla uzytkownika."}), 400
     user_id = str(uuid.uuid4())
@@ -2508,8 +2631,8 @@ def api_create_user():
         return jsonify({"error": "Login jest juz zajety."}), 409
     connection.execute(
         """
-        INSERT INTO users (id, name, department, login, password_hash, role, permissions_json, active)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO users (id, name, department, login, password_hash, role, permissions_json, active, can_create_databases)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             user_id,
@@ -2520,6 +2643,7 @@ def api_create_user():
             role,
             json.dumps(visible_sections, ensure_ascii=True),
             1,
+            1 if can_create_databases else 0,
         ),
     )
     connection.commit()
@@ -2543,9 +2667,11 @@ def api_update_user(user_id):
     department = str(data.get("department", "Dokumentacja")).strip() or "Dokumentacja"
     role = str(data.get("role", "user")).strip().lower()
     role = "admin" if role == "admin" else "user"
+    can_create_databases = to_bool(data.get("canCreateDatabases"))
     visible_sections = normalize_visible_sections(data.get("visibleSections"))
     if role == "admin":
         visible_sections = USER_VISIBLE_SECTIONS[:]
+        can_create_databases = True
     elif len(visible_sections) == 0:
         return jsonify({"error": "Wybierz przynajmniej jedna sekcje widoczna dla uzytkownika."}), 400
 
@@ -2567,7 +2693,7 @@ def api_update_user(user_id):
         connection.execute(
             """
             UPDATE users
-            SET name = ?, department = ?, login = ?, password_hash = ?, role = ?, permissions_json = ?
+            SET name = ?, department = ?, login = ?, password_hash = ?, role = ?, permissions_json = ?, can_create_databases = ?
             WHERE id = ?
             """,
             (
@@ -2577,6 +2703,7 @@ def api_update_user(user_id):
                 hash_password(password),
                 role,
                 json.dumps(visible_sections, ensure_ascii=True),
+                1 if can_create_databases else 0,
                 user_id,
             ),
         )
@@ -2584,7 +2711,7 @@ def api_update_user(user_id):
         connection.execute(
             """
             UPDATE users
-            SET name = ?, department = ?, login = ?, role = ?, permissions_json = ?
+            SET name = ?, department = ?, login = ?, role = ?, permissions_json = ?, can_create_databases = ?
             WHERE id = ?
             """,
             (
@@ -2593,6 +2720,7 @@ def api_update_user(user_id):
                 login,
                 role,
                 json.dumps(visible_sections, ensure_ascii=True),
+                1 if can_create_databases else 0,
                 user_id,
             ),
         )

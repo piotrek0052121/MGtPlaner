@@ -89,6 +89,7 @@ const el = {
   activeOrdersCount: document.querySelector("#activeOrdersCount"),
   goButtons: Array.from(document.querySelectorAll("[data-go]")),
   loginForm: document.querySelector("#loginForm"),
+  loginDatabaseSelect: document.querySelector("#loginDatabaseSelect"),
   loginInput: document.querySelector("#loginInput"),
   loginPasswordInput: document.querySelector("#loginPasswordInput"),
   loginBtn: document.querySelector("#loginBtn"),
@@ -186,6 +187,7 @@ const el = {
   setFeedbackDepartmentBtn: document.querySelector("#setFeedbackDepartmentBtn"),
   applyFeedbackChangesBtn: document.querySelector("#applyFeedbackChangesBtn"),
   userForm: document.querySelector("#userForm"),
+  userCanCreateDatabasesInput: document.querySelector('#userForm input[name="canCreateDatabases"]'),
   userRoleSelect: document.querySelector("#userRoleSelect"),
   userSubmitBtn: document.querySelector("#userSubmitBtn"),
   cancelUserEditBtn: document.querySelector("#cancelUserEditBtn"),
@@ -226,6 +228,7 @@ async function init() {
   fillStatusSelectors();
   bindNav();
   bindActions();
+  await loadPublicDatabases();
   await restoreSessionUser();
   syncUserFormMode();
   await reloadAndRender();
@@ -246,6 +249,9 @@ function bindActions() {
   el.loginForm?.addEventListener("submit", (event) => {
     event.preventDefault();
     safeAction(loginUser);
+  });
+  el.loginDatabaseSelect?.addEventListener("change", () => {
+    state.activeDatabaseKey = String(el.loginDatabaseSelect.value || state.activeDatabaseKey || "default");
   });
   el.logoutBtn?.addEventListener("click", () => safeAction(logoutUser));
   el.postLoginLinks?.addEventListener("click", (event) => {
@@ -643,9 +649,28 @@ async function restoreSessionUser() {
   try {
     const payload = await api("/api/auth/session");
     ui.currentUser = normalizeCurrentUser(payload.user || {});
+    if (Array.isArray(payload.databases)) {
+      state.databases = payload.databases;
+    }
+    state.activeDatabaseKey = String(payload.activeDatabase || state.activeDatabaseKey || "default");
   } catch (_error) {
     ui.currentUser = null;
   }
+  syncLoginDatabaseSelect();
+}
+
+async function loadPublicDatabases() {
+  try {
+    const payload = await api("/api/public/databases");
+    state.databases = Array.isArray(payload.databases) ? payload.databases : [];
+    state.activeDatabaseKey = String(payload.activeDatabase || state.activeDatabaseKey || "default");
+  } catch (_error) {
+    if (!Array.isArray(state.databases) || state.databases.length === 0) {
+      state.databases = [{ key: "default", name: "Domyslna baza", fileName: "planner.db", active: true, variant: false }];
+      state.activeDatabaseKey = "default";
+    }
+  }
+  syncLoginDatabaseSelect();
 }
 
 async function loginUser() {
@@ -654,11 +679,17 @@ async function loginUser() {
   }
   const login = String(el.loginInput?.value || "").trim();
   const password = String(el.loginPasswordInput?.value || "");
+  const databaseKey = String(el.loginDatabaseSelect?.value || state.activeDatabaseKey || "default").trim() || "default";
   const payload = await api("/api/auth/login", {
     method: "POST",
-    body: { login, password },
+    body: { login, password, databaseKey },
   });
   ui.currentUser = normalizeCurrentUser(payload.user || {});
+  state.databases = Array.isArray(payload.databases) ? payload.databases : state.databases;
+  state.activeDatabaseKey = String(payload.activeDatabase || databaseKey);
+  if (el.loginDatabaseSelect) {
+    el.loginDatabaseSelect.value = state.activeDatabaseKey;
+  }
   await reloadAndRender();
   const firstSection = firstVisibleSectionForCurrentUser();
   setView(firstSection || "dashboard", true);
@@ -673,8 +704,11 @@ function resetLocalSessionState() {
   state.stationSettings = {};
   state.technologies = {};
   state.materialRules = {};
-  state.databases = [];
-  state.activeDatabaseKey = "default";
+  if (!Array.isArray(state.databases) || state.databases.length === 0) {
+    state.databases = [{ key: "default", name: "Domyslna baza", fileName: "planner.db", active: true, variant: false }];
+  }
+  state.activeDatabaseKey =
+    String(el.loginDatabaseSelect?.value || state.activeDatabaseKey || "default").trim() || "default";
   if (el.loginInput) {
     el.loginInput.value = "";
   }
@@ -690,6 +724,7 @@ function resetLocalSessionState() {
   closeModal("positionModal");
   closeModal("orderModal");
   setView("dashboard", true);
+  syncLoginDatabaseSelect();
 }
 
 async function logoutUser() {
@@ -867,8 +902,9 @@ async function createUser() {
     name: String(fd.get("name") || "").trim(),
     login: String(fd.get("login") || "").trim(),
     password: String(fd.get("password") || ""),
-      department: String(fd.get("department") || "Dokumentacja"),
+    department: String(fd.get("department") || "Dokumentacja"),
     role,
+    canCreateDatabases: role === "admin" ? true : toBoolean(fd.get("canCreateDatabases")),
     visibleSections,
   };
   if (ui.editingUserId) {
@@ -922,6 +958,7 @@ function startUserEdit(userId) {
   const passwordInput = el.userForm?.querySelector('input[name="password"]');
   const departmentSelect = el.userForm?.querySelector('select[name="department"]');
   const roleSelect = el.userForm?.querySelector('select[name="role"]');
+  const canCreateDbInput = el.userForm?.querySelector('input[name="canCreateDatabases"]');
 
   if (nameInput) {
     nameInput.value = user.name || "";
@@ -937,6 +974,9 @@ function startUserEdit(userId) {
   }
   if (roleSelect) {
     roleSelect.value = String(user.role || "user").toLowerCase() === "admin" ? "admin" : "user";
+  }
+  if (canCreateDbInput) {
+    canCreateDbInput.checked = Boolean(user.canCreateDatabases);
   }
   setUserPermissionsSelection(user.visibleSections || []);
   syncUserPermissionsEnabledState();
@@ -964,8 +1004,12 @@ function resetUserFormState() {
   ui.editingUserId = "";
   el.userForm?.reset();
   const roleNode = el.userForm?.querySelector('select[name="role"]');
+  const canCreateDbInput = el.userForm?.querySelector('input[name="canCreateDatabases"]');
   if (roleNode) {
     roleNode.value = "user";
+  }
+  if (canCreateDbInput) {
+    canCreateDbInput.checked = false;
   }
   setUserPermissionsSelection(["orders", "gantt", "reports", "execution", "feedback"]);
   syncUserPermissionsEnabledState();
@@ -1012,8 +1056,8 @@ async function saveSettings() {
 }
 
 async function createDatabaseVariant() {
-  if (!isAdminUser()) {
-    throw new Error("Tylko administrator moze dodawac nowe bazy.");
+  if (!canCreateDatabaseVariants()) {
+    throw new Error("Brak uprawnien do tworzenia nowych baz.");
   }
   const name = String(el.newDatabaseNameInput?.value || "").trim();
   if (!name) {
@@ -1031,12 +1075,13 @@ async function createDatabaseVariant() {
   if (el.databaseStatusText) {
     el.databaseStatusText.textContent = "Nowa baza zostala utworzona.";
   }
+  syncLoginDatabaseSelect();
   renderDatabaseManager();
 }
 
 async function switchActiveDatabase() {
-  if (!isAdminUser()) {
-    throw new Error("Tylko administrator moze przelaczac bazy.");
+  if (!isLoggedIn()) {
+    throw new Error("Zaloguj sie, aby przelaczyc baze.");
   }
   const key = String(el.databaseSelect?.value || "").trim();
   if (!key) {
@@ -1048,6 +1093,7 @@ async function switchActiveDatabase() {
   });
   state.databases = Array.isArray(payload.databases) ? payload.databases : [];
   state.activeDatabaseKey = String(payload.activeDatabase || key);
+  syncLoginDatabaseSelect();
   if (el.databaseStatusText) {
     el.databaseStatusText.textContent = "Baza zostala przelaczona.";
   }
@@ -1996,6 +2042,13 @@ function isAdminUser() {
   return String(ui.currentUser?.role || "").toLowerCase() === "admin";
 }
 
+function canCreateDatabaseVariants() {
+  if (isAdminUser()) {
+    return true;
+  }
+  return Boolean(ui.currentUser?.canCreateDatabases);
+}
+
 function normalizeVisibleSections(raw) {
   if (!Array.isArray(raw)) {
     return [];
@@ -2022,6 +2075,7 @@ function normalizeCurrentUser(raw) {
     login: String(raw?.login || "").trim(),
     role,
     visibleSections: normalizeVisibleSections(raw?.visibleSections ?? raw?.visible_sections),
+    canCreateDatabases: Boolean(raw?.canCreateDatabases ?? raw?.can_create_databases),
   };
 }
 
@@ -2450,8 +2504,30 @@ function renderAll() {
   renderTechnologyAllocationEditor();
 }
 
+function syncLoginDatabaseSelect() {
+  if (!el.loginDatabaseSelect) {
+    return;
+  }
+  const source =
+    Array.isArray(state.databases) && state.databases.length > 0
+      ? state.databases
+      : [{ key: "default", name: "Domyslna baza", fileName: "planner.db", active: true, variant: false }];
+  const currentValue = String(el.loginDatabaseSelect.value || "").trim();
+  el.loginDatabaseSelect.innerHTML = source
+    .map((item) => {
+      const key = String(item.key || "");
+      const label = `${item.name || key} - ${item.fileName || ""}`;
+      return `<option value="${escapeHtml(key)}">${escapeHtml(label)}</option>`;
+    })
+    .join("");
+  const validCurrent = source.some((item) => String(item.key || "") === currentValue);
+  const validActive = source.some((item) => String(item.key || "") === state.activeDatabaseKey);
+  el.loginDatabaseSelect.value = validCurrent ? currentValue : validActive ? state.activeDatabaseKey : String(source[0]?.key || "default");
+}
+
 function renderLoginPanel() {
   const logged = isLoggedIn();
+  syncLoginDatabaseSelect();
   if (el.loginStatusText) {
     el.loginStatusText.textContent = logged
       ? "Zalogowano. Masz dostep tylko do przypisanych sekcji."
@@ -2472,6 +2548,9 @@ function renderLoginPanel() {
       el.loginPasswordInput.value = "";
     }
   }
+  if (el.loginDatabaseSelect) {
+    el.loginDatabaseSelect.disabled = logged;
+  }
   if (el.currentUserInfo) {
     if (logged) {
       const roleLabel = isAdminUser() ? "Admin" : "Uzytkownik";
@@ -2480,7 +2559,14 @@ function renderLoginPanel() {
         : visibleSectionsForCurrentUser()
             .map((section) => SECTION_LABELS[section] || section)
             .join(", ") || "Brak sekcji";
-      el.currentUserInfo.innerHTML = `<strong>${escapeHtml(ui.currentUser.name || ui.currentUser.login || "Uzytkownik")}</strong> | Rola: ${escapeHtml(roleLabel)} | Dostep: ${escapeHtml(sections)}`;
+      const dbLabel =
+        state.databases.find((item) => String(item.key || "") === state.activeDatabaseKey)?.name || state.activeDatabaseKey;
+      const creationLabel = canCreateDatabaseVariants() ? "Tworzenie baz: TAK" : "Tworzenie baz: NIE";
+      el.currentUserInfo.innerHTML = `<strong>${escapeHtml(
+        ui.currentUser.name || ui.currentUser.login || "Uzytkownik",
+      )}</strong> | Rola: ${escapeHtml(roleLabel)} | Baza: ${escapeHtml(dbLabel)} | ${escapeHtml(
+        creationLabel,
+      )} | Dostep: ${escapeHtml(sections)}`;
       el.currentUserInfo.classList.remove("panel-hidden");
     } else {
       el.currentUserInfo.textContent = "";
@@ -4099,6 +4185,7 @@ function renderUsers() {
     .map((user) => {
       const isUserAdmin = String(user.role || "user").toLowerCase() === "admin";
       const role = isUserAdmin ? "Admin" : "Uzytkownik";
+      const dbPermission = isUserAdmin || user.canCreateDatabases ? "Moze tworzyc bazy" : "Bez tworzenia baz";
       const sections =
         isUserAdmin
           ? "Wszystkie"
@@ -4121,6 +4208,7 @@ function renderUsers() {
           <span> | Login: ${escapeHtml(user.login || "-")}</span>
           <span> | Dzial: ${escapeHtml(user.department || "-")}</span>
           <span> | Rola: ${escapeHtml(role)}</span>
+          <span> | Bazy: ${escapeHtml(dbPermission)}</span>
           <span> | Widoki: ${escapeHtml(sections)}</span>
           ${actions}
         </li>
@@ -4141,21 +4229,29 @@ function syncUserPermissionsEnabledState() {
   const role = String(el.userRoleSelect?.value || "user").toLowerCase();
   const admin = role === "admin";
   const inputs = Array.from(el.userForm?.querySelectorAll('input[name="visibleSection"]') || []);
+  const canCreateDbInput = el.userForm?.querySelector('input[name="canCreateDatabases"]');
   inputs.forEach((input) => {
     input.disabled = admin;
     if (admin) {
       input.checked = true;
     }
   });
+  if (canCreateDbInput) {
+    canCreateDbInput.disabled = admin;
+    if (admin) {
+      canCreateDbInput.checked = true;
+    }
+  }
 }
 
 function renderDatabaseManager() {
   if (!el.databaseSelect || !el.switchDatabaseBtn || !el.createDatabaseBtn || !el.newDatabaseNameInput) {
     return;
   }
-  const admin = isAdminUser();
+  const canSwitch = isLoggedIn();
+  const canCreate = canCreateDatabaseVariants();
   if (el.databaseAdminHint) {
-    el.databaseAdminHint.classList.toggle("panel-hidden", admin);
+    el.databaseAdminHint.classList.toggle("panel-hidden", canCreate);
   }
 
   const databaseItems = Array.isArray(state.databases) && state.databases.length > 0 ? state.databases : [];
@@ -4172,12 +4268,16 @@ function renderDatabaseManager() {
   const valid = source.some((item) => String(item.key || "") === state.activeDatabaseKey);
   el.databaseSelect.value = valid ? state.activeDatabaseKey : String(source[0]?.key || "default");
 
-  el.databaseSelect.disabled = !admin;
-  el.switchDatabaseBtn.disabled = !admin;
-  el.newDatabaseNameInput.disabled = !admin;
-  el.createDatabaseBtn.disabled = !admin;
-  if (el.databaseStatusText && !admin) {
-    el.databaseStatusText.textContent = "Tryb tylko do odczytu. Zarzadzanie bazami jest dostepne dla admina.";
+  el.databaseSelect.disabled = !canSwitch;
+  el.switchDatabaseBtn.disabled = !canSwitch;
+  el.newDatabaseNameInput.disabled = !canCreate;
+  el.createDatabaseBtn.disabled = !canCreate;
+  if (el.databaseStatusText && !canCreate) {
+    el.databaseStatusText.textContent = "Mozesz przelaczac baze. Tworzenie baz jest dostepne dla admina lub wyznaczonego uzytkownika.";
+  } else if (el.databaseStatusText && canCreate) {
+    if (el.databaseStatusText.textContent.includes("Tworzenie baz jest dostepne")) {
+      el.databaseStatusText.textContent = "";
+    }
   }
 }
 

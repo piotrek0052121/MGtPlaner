@@ -1715,6 +1715,11 @@ pre {
   margin-top: 22px;
 }
 
+.checkbox-inline-top {
+  margin-top: 0;
+  align-self: end;
+}
+
 .checkbox-line input {
   width: auto;
 }
@@ -1935,6 +1940,169 @@ pre {
   .gantt-task-header,
   .gantt-task-row {
     grid-template-columns: minmax(170px, 1.3fr) 64px 88px 88px;
+  }
+}
+
+@media (max-width: 1200px) {
+  .app-header {
+    padding: 14px 16px 6px;
+  }
+
+  .layout {
+    padding: 8px 10px 14px;
+    gap: 10px;
+  }
+
+  .card {
+    padding: 14px;
+  }
+}
+
+@media (max-width: 760px) {
+  body {
+    background-attachment: scroll;
+  }
+
+  .app-header {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 10px;
+    padding: 12px 12px 6px;
+  }
+
+  .header-stats {
+    width: 100%;
+    flex-wrap: wrap;
+  }
+
+  .chip {
+    flex: 1 1 140px;
+    min-width: 0;
+  }
+
+  .layout {
+    padding: 6px 8px 10px;
+    gap: 8px;
+  }
+
+  .sidebar {
+    display: flex;
+    flex-wrap: nowrap;
+    gap: 6px;
+    overflow-x: auto;
+    overflow-y: hidden;
+    position: sticky;
+    top: 6px;
+    z-index: 40;
+    height: auto;
+    padding: 8px;
+  }
+
+  .nav-btn {
+    flex: 0 0 auto;
+    min-width: 150px;
+    padding: 9px 10px;
+    font-size: 13px;
+  }
+
+  .dashboard-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .card {
+    padding: 12px;
+    margin-bottom: 10px;
+  }
+
+  .form-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .inline-controls {
+    display: grid;
+    grid-template-columns: 1fr;
+    align-items: stretch;
+    gap: 8px;
+  }
+
+  .inline-controls > * {
+    width: 100%;
+  }
+
+  .inline-controls button,
+  .inline-controls .link-btn {
+    width: 100%;
+    justify-content: center;
+  }
+
+  .table-wrap,
+  .orders-table-wrap {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .orders-table th,
+  .orders-table td,
+  th,
+  td {
+    padding: 8px 6px;
+    font-size: 12px;
+  }
+
+  .orders-sticky-bar {
+    top: 4px;
+    padding: 8px;
+  }
+
+  .login-card {
+    max-width: 100%;
+  }
+
+  #currentUserInfo {
+    line-height: 1.45;
+    word-break: break-word;
+  }
+
+  .gantt-full-card {
+    height: calc(100vh - 130px);
+    min-height: calc(100vh - 130px);
+  }
+
+  .modal-card,
+  .modal-card-order-details {
+    width: calc(100vw - 8px);
+    max-height: calc(100vh - 8px);
+    margin: 4px auto;
+    border-radius: 10px;
+    padding: 12px;
+  }
+}
+
+@media (max-width: 520px) {
+  h1 {
+    font-size: 22px;
+  }
+
+  .nav-btn {
+    min-width: 132px;
+    font-size: 12px;
+  }
+
+  button,
+  .ghost-btn {
+    font-size: 12px;
+    padding: 8px 10px;
+  }
+
+  input,
+  select,
+  textarea {
+    font-size: 13px;
+    padding: 8px 9px;
+  }
+
+  .feedback-actions button {
+    flex: 1 1 100%;
   }
 }
 

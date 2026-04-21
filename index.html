@@ -49,6 +49,10 @@
             <p id="loginStatusText">Zaloguj sie, aby odblokowac pozostale sekcje.</p>
             <form id="loginForm" class="inline-controls">
               <label>
+                Baza
+                <select id="loginDatabaseSelect" name="databaseKey"></select>
+              </label>
+              <label>
                 Login
                 <input id="loginInput" name="login" autocomplete="username" required />
               </label>
@@ -412,6 +416,10 @@
                   <option value="Dokumentacja">Dokumentacja</option>
                 </select>
               </label>
+              <label class="checkbox-line checkbox-inline-top">
+                <input type="checkbox" name="canCreateDatabases" />
+                Moze tworzyc nowe bazy
+              </label>
               <label class="full">
                 Widoczne pola / sekcje
                 <div id="userPermissionsGrid" class="working-days-grid">
@@ -438,7 +446,7 @@
         <section class="view" id="view-settings">
           <div class="card">
             <h2>Bazy danych (warianty testowe)</h2>
-            <p id="databaseAdminHint" class="panel-hidden">Tylko administrator moze dodawac i przelaczac bazy.</p>
+            <p id="databaseAdminHint" class="panel-hidden">Przelaczanie bazy: wszyscy zalogowani. Tworzenie baz: admin lub wyznaczony uzytkownik.</p>
             <div class="inline-controls">
               <label>
                 Aktywna baza
