@@ -1094,6 +1094,91 @@ def get_users(connection):
     return [user_payload_from_row(item) for item in rows]
 
 
+def get_user_auth_row(connection, login):
+    login_value = str(login or "").strip()
+    if not login_value:
+        return None
+    return connection.execute(
+        """
+        SELECT id, name, department, login, password_hash, role, permissions_json, active, can_create_databases
+        FROM users
+        WHERE LOWER(COALESCE(login, '')) = LOWER(?)
+        LIMIT 1
+        """,
+        (login_value,),
+    ).fetchone()
+
+
+def get_user_auth_row_from_path(db_path, login):
+    path = Path(db_path)
+    if not path.exists():
+        return None
+    initialize(path)
+    connection = db_connect(path)
+    row = get_user_auth_row(connection, login)
+    connection.close()
+    return row
+
+
+def upsert_user_row_to_database(target_db_path, source_row):
+    if not source_row:
+        return False
+    target_path = Path(target_db_path)
+    if not target_path.exists():
+        return False
+    source = dict(source_row)
+    login_value = str(source.get("login") or "").strip()
+    if not login_value:
+        return False
+    initialize(target_path)
+    connection = db_connect(target_path)
+    existing_by_login = get_user_auth_row(connection, login_value)
+    if existing_by_login:
+        connection.execute(
+            """
+            UPDATE users
+            SET name = ?, department = ?, password_hash = ?, role = ?, permissions_json = ?, active = ?, can_create_databases = ?
+            WHERE id = ?
+            """,
+            (
+                str(source.get("name") or "").strip() or "Uzytkownik",
+                str(source.get("department") or "").strip() or "Dokumentacja",
+                str(source.get("password_hash") or "").strip() or hash_password("admin"),
+                str(source.get("role") or "user").strip().lower() if str(source.get("role") or "").strip() else "user",
+                str(source.get("permissions_json") or "[]"),
+                1 if bool(source.get("active", 1)) else 0,
+                1 if bool(source.get("can_create_databases", 0)) else 0,
+                existing_by_login["id"],
+            ),
+        )
+    else:
+        source_id = str(source.get("id") or uuid.uuid4())
+        id_conflict = connection.execute("SELECT id FROM users WHERE id = ? LIMIT 1", (source_id,)).fetchone()
+        if id_conflict:
+            source_id = str(uuid.uuid4())
+        connection.execute(
+            """
+            INSERT INTO users (id, name, department, login, password_hash, role, permissions_json, active, can_create_databases)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                source_id,
+                str(source.get("name") or "").strip() or "Uzytkownik",
+                str(source.get("department") or "").strip() or "Dokumentacja",
+                login_value,
+                str(source.get("password_hash") or "").strip() or hash_password("admin"),
+                str(source.get("role") or "user").strip().lower() if str(source.get("role") or "").strip() else "user",
+                str(source.get("permissions_json") or "[]"),
+                1 if bool(source.get("active", 1)) else 0,
+                1 if bool(source.get("can_create_databases", 0)) else 0,
+            ),
+        )
+    connection.execute("UPDATE users SET can_create_databases = 1 WHERE LOWER(COALESCE(role, '')) = 'admin'")
+    connection.commit()
+    connection.close()
+    return True
+
+
 def get_feedback_events(connection):
     rows = connection.execute(
         """
@@ -2530,29 +2615,38 @@ def api_auth_login():
         return jsonify({"error": "Wybrana baza nie istnieje."}), 404
     initialize(target_path)
 
-    connection = db_connect(target_path)
-    row = connection.execute(
-        """
-        SELECT id, name, department, login, password_hash, role, permissions_json, active, can_create_databases
-        FROM users
-        WHERE LOWER(COALESCE(login, '')) = LOWER(?)
-        LIMIT 1
-        """,
-        (login,),
-    ).fetchone()
-    connection.close()
+    target_row = get_user_auth_row_from_path(target_path, login)
+    base_row = None
+    if Path(target_path) != BASE_DB_PATH:
+        base_row = get_user_auth_row_from_path(BASE_DB_PATH, login)
 
-    if not row:
-        return jsonify({"error": "Nieprawidlowy login lub haslo."}), 401
-    if not bool(row["active"]):
-        return jsonify({"error": "Uzytkownik jest nieaktywny."}), 403
-    if not verify_password(password, row["password_hash"]):
+    authenticated_row = None
+    authenticated_source = None
+    for source_path, row in ((target_path, target_row), (BASE_DB_PATH, base_row)):
+        if not row:
+            continue
+        if not verify_password(password, row["password_hash"]):
+            continue
+        if not bool(row["active"]):
+            return jsonify({"error": "Uzytkownik jest nieaktywny."}), 403
+        authenticated_row = row
+        authenticated_source = Path(source_path)
+        break
+
+    if not authenticated_row:
         return jsonify({"error": "Nieprawidlowy login lub haslo."}), 401
 
-    user_payload = user_payload_from_row(row)
+    user_payload = user_payload_from_row(authenticated_row)
     access_map = load_database_access_map()
     if not can_user_access_database(user_payload, database_key, access_map):
         return jsonify({"error": "Brak dostepu do wybranej bazy."}), 403
+
+    if authenticated_source and authenticated_source != Path(target_path):
+        upsert_user_row_to_database(target_path, authenticated_row)
+        refreshed = get_user_auth_row_from_path(target_path, login)
+        if refreshed:
+            user_payload = user_payload_from_row(refreshed)
+
     session.clear()
     set_request_database_key(database_key)
     session["user_id"] = user_payload["id"]
@@ -2624,18 +2718,19 @@ def sync_session_after_database_switch(preferred_login, database_key=None):
         session.pop("user_id", None)
         g.current_user = None
         return False
-    connection = db_connect(target_path)
-    row = connection.execute(
-        """
-        SELECT id, name, department, login, role, permissions_json, active, can_create_databases
-        FROM users
-        WHERE LOWER(COALESCE(login, '')) = LOWER(?) AND active = 1
-        LIMIT 1
-        """,
-        (login,),
-    ).fetchone()
-    connection.close()
+    row = get_user_auth_row_from_path(target_path, login)
+    if (not row or not bool(row["active"])) and target_path != BASE_DB_PATH:
+        fallback = get_user_auth_row_from_path(BASE_DB_PATH, login)
+        if fallback and bool(fallback["active"]):
+            fallback_payload = user_payload_from_row(fallback)
+            if can_user_access_database(fallback_payload, key):
+                upsert_user_row_to_database(target_path, fallback)
+                row = get_user_auth_row_from_path(target_path, login) or fallback
     if not row:
+        session.pop("user_id", None)
+        g.current_user = None
+        return False
+    if not bool(row["active"]):
         session.pop("user_id", None)
         g.current_user = None
         return False
