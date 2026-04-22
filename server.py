@@ -3172,11 +3172,15 @@ def require_admin_user_management():
     return None
 
 
-def normalize_skill_department(value):
+def normalize_skill_department(value, allowed_departments=None):
+    allowed = [str(item or "").strip() for item in (allowed_departments or DEPARTMENTS)]
+    allowed = [item for item in allowed if item]
+    if not allowed:
+        allowed = DEPARTMENTS[:]
     department = str(value or "").strip()
-    if department in DEPARTMENTS:
+    if department in allowed:
         return department
-    return "Maszynownia"
+    return allowed[0]
 
 
 def normalize_skills_payload(raw_skills, valid_station_ids):
@@ -3198,7 +3202,12 @@ def upsert_skill_worker(connection, worker_id, payload):
     worker_name = str(payload.get("name", "")).strip()
     if not worker_name:
         return "Imie i nazwisko pracownika jest wymagane.", 400
-    department = normalize_skill_department(payload.get("department"))
+    station_departments = []
+    for station in get_stations(connection):
+        department = str(station.get("department") or "").strip()
+        if department and department not in station_departments:
+            station_departments.append(department)
+    department = normalize_skill_department(payload.get("department"), station_departments)
     active = to_bool(payload.get("active", True))
     valid_station_ids = {item["id"] for item in get_stations(connection)}
     normalized_skills = normalize_skills_payload(payload.get("skills"), valid_station_ids)

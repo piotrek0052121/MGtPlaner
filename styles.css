@@ -106,7 +106,8 @@ body {
 .app-header {
   display: flex;
   justify-content: space-between;
-  align-items: end;
+  align-items: flex-end;
+  flex-wrap: wrap;
   gap: 16px;
   padding: 18px 22px 6px;
 }
@@ -126,8 +127,12 @@ h1 {
 }
 
 .header-stats {
-  display: flex;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(150px, 1fr));
   gap: 10px;
+  width: min(460px, 100%);
+  margin-left: auto;
+  flex: 1 1 340px;
 }
 
 .chip {
@@ -135,14 +140,24 @@ h1 {
   border: 1px solid rgba(56, 78, 48, 0.24);
   border-radius: 999px;
   padding: 6px 12px;
-  min-width: 130px;
+  min-width: 0;
+  width: 100%;
+  min-height: 58px;
   display: flex;
   flex-direction: column;
+  justify-content: center;
   font-size: 12px;
+}
+
+.chip span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .chip strong {
   font-size: 15px;
+  line-height: 1.2;
 }
 
 .layout {
@@ -2114,6 +2129,17 @@ pre {
 }
 
 @media (max-width: 980px) {
+  .app-header {
+    align-items: flex-start;
+  }
+
+  .header-stats {
+    width: 100%;
+    margin-left: 0;
+    grid-template-columns: repeat(2, minmax(130px, 1fr));
+    flex: 1 1 auto;
+  }
+
   .layout {
     grid-template-columns: 1fr;
   }
@@ -2195,7 +2221,9 @@ pre {
 
   .header-stats {
     width: 100%;
-    flex-wrap: wrap;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(120px, 1fr));
+    gap: 8px;
   }
 
   .chip {
@@ -2302,6 +2330,10 @@ pre {
 }
 
 @media (max-width: 520px) {
+  .header-stats {
+    grid-template-columns: 1fr;
+  }
+
   h1 {
     font-size: 22px;
   }

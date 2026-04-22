@@ -971,6 +971,26 @@ function collectSkillLevelsFromForm() {
   return output;
 }
 
+function availableSkillDepartments() {
+  const fromStations = Array.from(
+    new Set(
+      (state.stations || [])
+        .map((station) => String(station?.department || "").trim())
+        .filter((department) => department.length > 0),
+    ),
+  );
+  if (fromStations.length === 0) {
+    return DEPARTMENTS.slice();
+  }
+  const ordered = DEPARTMENTS.filter((department) => fromStations.includes(department));
+  fromStations.forEach((department) => {
+    if (!ordered.includes(department)) {
+      ordered.push(department);
+    }
+  });
+  return ordered.length > 0 ? ordered : DEPARTMENTS.slice();
+}
+
 async function saveSkillWorker() {
   if (!isLoggedIn()) {
     throw new Error("Zaloguj sie, aby zapisac pracownika.");
@@ -978,9 +998,10 @@ async function saveSkillWorker() {
   if (!el.skillWorkerForm?.reportValidity()) {
     return;
   }
+  const departments = availableSkillDepartments();
   const payload = {
     name: String(el.skillWorkerNameInput?.value || "").trim(),
-    department: String(el.skillWorkerDepartmentSelect?.value || DEPARTMENTS[0]),
+    department: String(el.skillWorkerDepartmentSelect?.value || departments[0] || DEPARTMENTS[0]),
     active: Boolean(el.skillWorkerActiveInput?.checked),
     skills: collectSkillLevelsFromForm(),
   };
@@ -1033,7 +1054,8 @@ function startSkillWorkerEdit(workerId) {
     el.skillWorkerNameInput.value = worker.name || "";
   }
   if (el.skillWorkerDepartmentSelect) {
-    const validDepartment = DEPARTMENTS.includes(worker.department) ? worker.department : DEPARTMENTS[0];
+    const departments = availableSkillDepartments();
+    const validDepartment = departments.includes(worker.department) ? worker.department : departments[0] || DEPARTMENTS[0];
     el.skillWorkerDepartmentSelect.value = validDepartment;
   }
   if (el.skillWorkerActiveInput) {
@@ -1059,9 +1081,10 @@ function resetSkillWorkerFormState() {
   ui.editingSkillWorkerId = "";
   el.skillWorkerForm?.reset();
   if (el.skillWorkerDepartmentSelect) {
-    el.skillWorkerDepartmentSelect.value = DEPARTMENTS.includes(el.skillWorkerDepartmentSelect.value)
+    const departments = availableSkillDepartments();
+    el.skillWorkerDepartmentSelect.value = departments.includes(el.skillWorkerDepartmentSelect.value)
       ? el.skillWorkerDepartmentSelect.value
-      : DEPARTMENTS[0];
+      : departments[0] || DEPARTMENTS[0];
   }
   if (el.skillWorkerActiveInput) {
     el.skillWorkerActiveInput.checked = true;
@@ -2349,6 +2372,7 @@ function normalizeSkillWorkers(raw) {
   if (!Array.isArray(raw)) {
     return [];
   }
+  const departments = availableSkillDepartments();
   const stationIds = new Set((state.stations || []).map((station) => String(station?.id || "").trim()));
   const workers = [];
   raw.forEach((item) => {
@@ -2359,9 +2383,9 @@ function normalizeSkillWorkers(raw) {
     if (!workerId) {
       return;
     }
-    const department = DEPARTMENTS.includes(String(item.department || "").trim())
+    const department = departments.includes(String(item.department || "").trim())
       ? String(item.department || "").trim()
-      : DEPARTMENTS[0];
+      : departments[0] || DEPARTMENTS[0];
     const skillMap = {};
     if (item.skills && typeof item.skills === "object" && !Array.isArray(item.skills)) {
       Object.entries(item.skills).forEach(([rawStationId, rawLevel]) => {
@@ -4409,12 +4433,13 @@ function renderSkillWorkerForm() {
     return;
   }
   if (el.skillWorkerDepartmentSelect) {
+    const departments = availableSkillDepartments();
     const currentDepartment = String(el.skillWorkerDepartmentSelect.value || "").trim();
-    el.skillWorkerDepartmentSelect.innerHTML = DEPARTMENTS.map(
+    el.skillWorkerDepartmentSelect.innerHTML = departments.map(
       (department) => `<option value="${escapeHtml(department)}">${escapeHtml(department)}</option>`,
     ).join("");
-    const validCurrent = DEPARTMENTS.includes(currentDepartment);
-    el.skillWorkerDepartmentSelect.value = validCurrent ? currentDepartment : DEPARTMENTS[0];
+    const validCurrent = departments.includes(currentDepartment);
+    el.skillWorkerDepartmentSelect.value = validCurrent ? currentDepartment : departments[0] || DEPARTMENTS[0];
   }
 
   const stations = Array.isArray(state.stations) ? state.stations : [];
@@ -4427,9 +4452,10 @@ function renderSkillWorkerForm() {
       el.skillWorkerNameInput.value = editingWorker.name || "";
     }
     if (el.skillWorkerDepartmentSelect) {
-      el.skillWorkerDepartmentSelect.value = DEPARTMENTS.includes(editingWorker.department)
+      const departments = availableSkillDepartments();
+      el.skillWorkerDepartmentSelect.value = departments.includes(editingWorker.department)
         ? editingWorker.department
-        : DEPARTMENTS[0];
+        : departments[0] || DEPARTMENTS[0];
     }
     if (el.skillWorkerActiveInput) {
       el.skillWorkerActiveInput.checked = editingWorker.active !== false;
