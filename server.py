@@ -896,6 +896,7 @@ def initialize(target_db_path=None):
           name TEXT NOT NULL,
           department TEXT NOT NULL,
           primary_station_id TEXT,
+          assigned_shift INTEGER NOT NULL DEFAULT 1,
           active INTEGER NOT NULL DEFAULT 1
         )
         """
@@ -925,7 +926,17 @@ def initialize(target_db_path=None):
     )
     ensure_column(connection, "skill_workers", "active", "INTEGER NOT NULL DEFAULT 1")
     ensure_column(connection, "skill_workers", "primary_station_id", "TEXT")
+    ensure_column(connection, "skill_workers", "assigned_shift", "INTEGER NOT NULL DEFAULT 1")
     connection.execute("UPDATE skill_workers SET active = COALESCE(active, 1)")
+    connection.execute(
+        """
+        UPDATE skill_workers
+        SET assigned_shift = CASE
+          WHEN assigned_shift IS NULL OR assigned_shift < 1 OR assigned_shift > 3 THEN 1
+          ELSE assigned_shift
+        END
+        """
+    )
     connection.execute(
         """
         UPDATE skill_workers
@@ -1432,7 +1443,7 @@ def get_orders(connection):
 def get_skill_workers(connection):
     worker_rows = connection.execute(
         """
-        SELECT id, name, department, primary_station_id, active
+        SELECT id, name, department, primary_station_id, assigned_shift, active
         FROM skill_workers
         ORDER BY department, name, id
         """
@@ -1465,6 +1476,7 @@ def get_skill_workers(connection):
                 "name": str(row["name"] or "").strip(),
                 "department": str(row["department"] or "").strip() or "Maszynownia",
                 "primaryStationId": str(row["primary_station_id"] or "").strip(),
+                "assignedShift": clamp_int(row["assigned_shift"], 1, 3, 1),
                 "active": bool(row["active"]),
                 "skills": skills_by_worker.get(worker_id, {}),
             }
@@ -2965,7 +2977,7 @@ def api_create_database():
     ).fetchall()
     source_skill_workers = source_connection.execute(
         """
-        SELECT id, name, department, primary_station_id, active
+        SELECT id, name, department, primary_station_id, assigned_shift, active
         FROM skill_workers
         """
     ).fetchall()
@@ -3009,13 +3021,14 @@ def api_create_database():
         target_connection.execute("DELETE FROM skill_worker_skills")
         target_connection.execute("DELETE FROM skill_workers")
         target_connection.executemany(
-            "INSERT INTO skill_workers (id, name, department, primary_station_id, active) VALUES (?, ?, ?, ?, ?)",
+            "INSERT INTO skill_workers (id, name, department, primary_station_id, assigned_shift, active) VALUES (?, ?, ?, ?, ?, ?)",
             [
                 (
                     str(row["id"] or uuid.uuid4()),
                     str(row["name"] or "").strip() or "Pracownik",
                     normalize_skill_department(row["department"]),
                     str(row["primary_station_id"] or "").strip() or None,
+                    clamp_int(row["assigned_shift"], 1, 3, 1),
                     1 if bool(row["active"]) else 0,
                 )
                 for row in source_skill_workers
@@ -3236,6 +3249,7 @@ def upsert_skill_worker(connection, worker_id, payload):
     if not worker_name:
         return "Imie i nazwisko pracownika jest wymagane.", 400
     department = normalize_skill_department(payload.get("department"))
+    assigned_shift = clamp_int(payload.get("assignedShift"), 1, 3, 1)
     active = to_bool(payload.get("active", True))
     stations = get_stations(connection)
     station_by_id = {str(item.get("id") or ""): item for item in stations}
@@ -3254,13 +3268,13 @@ def upsert_skill_worker(connection, worker_id, payload):
     existing = connection.execute("SELECT id FROM skill_workers WHERE id = ?", (worker_id,)).fetchone()
     if existing:
         connection.execute(
-            "UPDATE skill_workers SET name = ?, department = ?, primary_station_id = ?, active = ? WHERE id = ?",
-            (worker_name, department, primary_station_id or None, 1 if active else 0, worker_id),
+            "UPDATE skill_workers SET name = ?, department = ?, primary_station_id = ?, assigned_shift = ?, active = ? WHERE id = ?",
+            (worker_name, department, primary_station_id or None, assigned_shift, 1 if active else 0, worker_id),
         )
     else:
         connection.execute(
-            "INSERT INTO skill_workers (id, name, department, primary_station_id, active) VALUES (?, ?, ?, ?, ?)",
-            (worker_id, worker_name, department, primary_station_id or None, 1 if active else 0),
+            "INSERT INTO skill_workers (id, name, department, primary_station_id, assigned_shift, active) VALUES (?, ?, ?, ?, ?, ?)",
+            (worker_id, worker_name, department, primary_station_id or None, assigned_shift, 1 if active else 0),
         )
     connection.execute("DELETE FROM skill_worker_skills WHERE worker_id = ?", (worker_id,))
     if normalized_skills:
@@ -3458,6 +3472,33 @@ def api_update_skill_worker(worker_id):
     connection.commit()
     connection.close()
     return jsonify({"ok": True})
+
+
+@app.put("/api/skills/workers/bulk-shift")
+def api_bulk_update_skill_worker_shift():
+    payload = request.get_json(force=True)
+    raw_ids = payload.get("workerIds")
+    if not isinstance(raw_ids, list):
+        return jsonify({"error": "Lista pracownikow jest wymagana."}), 400
+    worker_ids = []
+    for value in raw_ids:
+        worker_id = str(value or "").strip()
+        if worker_id and worker_id not in worker_ids:
+            worker_ids.append(worker_id)
+    if len(worker_ids) == 0:
+        return jsonify({"error": "Zaznacz przynajmniej jednego pracownika."}), 400
+    assigned_shift = clamp_int(payload.get("assignedShift"), 1, 3, 1)
+    placeholders = ",".join("?" for _ in worker_ids)
+    connection = db()
+    before_changes = connection.total_changes
+    connection.execute(
+        f"UPDATE skill_workers SET assigned_shift = ? WHERE id IN ({placeholders})",
+        (assigned_shift, *worker_ids),
+    )
+    updated = max(0, connection.total_changes - before_changes)
+    connection.commit()
+    connection.close()
+    return jsonify({"ok": True, "updated": updated, "assignedShift": assigned_shift})
 
 
 @app.delete("/api/skills/workers/<worker_id>")

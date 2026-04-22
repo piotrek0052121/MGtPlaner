@@ -338,6 +338,14 @@
                   Stanowisko glowne
                   <select id="skillWorkerPrimaryStationSelect" name="primaryStationId"></select>
                 </label>
+                <label>
+                  Zmiana przypisana
+                  <select id="skillWorkerAssignedShiftSelect" name="assignedShift">
+                    <option value="1">Zmiana 1</option>
+                    <option value="2">Zmiana 2</option>
+                    <option value="3">Zmiana 3</option>
+                  </select>
+                </label>
                 <label class="checkbox-line checkbox-inline-top">
                   <input id="skillWorkerActiveInput" type="checkbox" checked />
                   Aktywny pracownik
@@ -352,6 +360,20 @@
 
             <div class="card">
               <h2>Lista pracownikow</h2>
+              <div class="inline-controls">
+                <button id="selectAllSkillWorkersBtn" type="button" class="ghost-btn">Zaznacz wszystkich</button>
+                <button id="clearSkillWorkersSelectionBtn" type="button" class="ghost-btn">Wyczysc zaznaczenie</button>
+                <label>
+                  Ustaw zmiane
+                  <select id="skillWorkersBulkShiftSelect">
+                    <option value="1">Zmiana 1</option>
+                    <option value="2">Zmiana 2</option>
+                    <option value="3">Zmiana 3</option>
+                  </select>
+                </label>
+                <button id="applySkillWorkersBulkShiftBtn" type="button">Przypisz zmiane zaznaczonym</button>
+              </div>
+              <p id="skillWorkersBulkStatus" class="skills-level-hint">Brak zaznaczonych pracownikow.</p>
               <div id="skillWorkersList" class="simple-list"></div>
             </div>
 

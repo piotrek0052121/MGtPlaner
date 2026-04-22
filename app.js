@@ -97,6 +97,7 @@ const ui = {
   ganttDaysBackToShow: 30,
   ganttDaysForwardToShow: 180,
   editingSkillWorkerId: "",
+  selectedSkillWorkerIds: [],
 };
 
 const el = {
@@ -191,11 +192,17 @@ const el = {
   skillWorkerNameInput: document.querySelector("#skillWorkerNameInput"),
   skillWorkerDepartmentSelect: document.querySelector("#skillWorkerDepartmentSelect"),
   skillWorkerPrimaryStationSelect: document.querySelector("#skillWorkerPrimaryStationSelect"),
+  skillWorkerAssignedShiftSelect: document.querySelector("#skillWorkerAssignedShiftSelect"),
   skillWorkerActiveInput: document.querySelector("#skillWorkerActiveInput"),
   skillWorkerSkillsWrap: document.querySelector("#skillWorkerSkillsWrap"),
   skillWorkerSubmitBtn: document.querySelector("#skillWorkerSubmitBtn"),
   cancelSkillWorkerEditBtn: document.querySelector("#cancelSkillWorkerEditBtn"),
   skillWorkersList: document.querySelector("#skillWorkersList"),
+  selectAllSkillWorkersBtn: document.querySelector("#selectAllSkillWorkersBtn"),
+  clearSkillWorkersSelectionBtn: document.querySelector("#clearSkillWorkersSelectionBtn"),
+  skillWorkersBulkShiftSelect: document.querySelector("#skillWorkersBulkShiftSelect"),
+  applySkillWorkersBulkShiftBtn: document.querySelector("#applySkillWorkersBulkShiftBtn"),
+  skillWorkersBulkStatus: document.querySelector("#skillWorkersBulkStatus"),
   skillsAllocationMode: document.querySelector("#skillsAllocationMode"),
   skillsAllocationAnchorDate: document.querySelector("#skillsAllocationAnchorDate"),
   runSkillsAllocationBtn: document.querySelector("#runSkillsAllocationBtn"),
@@ -373,6 +380,10 @@ function bindActions() {
   el.skillWorkerDepartmentSelect?.addEventListener("change", renderSkillWorkerForm);
   el.cancelSkillWorkerEditBtn?.addEventListener("click", cancelSkillWorkerEdit);
   el.skillWorkersList?.addEventListener("click", onSkillWorkersListClick);
+  el.skillWorkersList?.addEventListener("change", onSkillWorkersListChange);
+  el.selectAllSkillWorkersBtn?.addEventListener("click", selectAllSkillWorkers);
+  el.clearSkillWorkersSelectionBtn?.addEventListener("click", clearSkillWorkerSelection);
+  el.applySkillWorkersBulkShiftBtn?.addEventListener("click", () => safeAction(applyBulkShiftForSkillWorkers));
   el.runSkillsAllocationBtn?.addEventListener("click", renderSkillsAllocation);
   el.skillsAllocationMode?.addEventListener("change", renderSkillsAllocation);
   el.skillsAllocationAnchorDate?.addEventListener("change", renderSkillsAllocation);
@@ -989,6 +1000,7 @@ async function saveSkillWorker() {
     name: String(el.skillWorkerNameInput?.value || "").trim(),
     department: String(el.skillWorkerDepartmentSelect?.value || departments[0] || DEPARTMENTS[0]),
     primaryStationId: String(el.skillWorkerPrimaryStationSelect?.value || "").trim(),
+    assignedShift: clamp(toInt(el.skillWorkerAssignedShiftSelect?.value || 1), 1, 3),
     active: Boolean(el.skillWorkerActiveInput?.checked),
     skills: collectSkillLevelsFromForm(),
   };
@@ -1005,6 +1017,78 @@ async function saveSkillWorker() {
     });
   }
   resetSkillWorkerFormState();
+  await reloadAndRender();
+}
+
+function getSkillWorkerSelectionSet() {
+  const validIds = new Set((state.skillWorkers || []).map((worker) => String(worker.id || "").trim()).filter(Boolean));
+  const selected = new Set((ui.selectedSkillWorkerIds || []).map((id) => String(id || "").trim()).filter(Boolean));
+  Array.from(selected).forEach((id) => {
+    if (!validIds.has(id)) {
+      selected.delete(id);
+    }
+  });
+  return selected;
+}
+
+function setSkillWorkerSelectionSet(selection) {
+  ui.selectedSkillWorkerIds = Array.from(selection || []).map((id) => String(id || "").trim()).filter(Boolean);
+}
+
+function updateSkillWorkerSelectionStatus() {
+  if (!el.skillWorkersBulkStatus) {
+    return;
+  }
+  const count = getSkillWorkerSelectionSet().size;
+  el.skillWorkersBulkStatus.textContent = count > 0 ? `Zaznaczono pracownikow: ${count}` : "Brak zaznaczonych pracownikow.";
+}
+
+function onSkillWorkersListChange(event) {
+  const checkbox = event.target.closest('input[data-action="select-skill-worker"]');
+  if (!checkbox) {
+    return;
+  }
+  const workerId = String(checkbox.dataset.workerId || "").trim();
+  if (!workerId) {
+    return;
+  }
+  const selected = getSkillWorkerSelectionSet();
+  if (checkbox.checked) {
+    selected.add(workerId);
+  } else {
+    selected.delete(workerId);
+  }
+  setSkillWorkerSelectionSet(selected);
+  updateSkillWorkerSelectionStatus();
+}
+
+function selectAllSkillWorkers() {
+  const selected = new Set((state.skillWorkers || []).map((worker) => String(worker.id || "").trim()).filter(Boolean));
+  setSkillWorkerSelectionSet(selected);
+  renderSkillWorkersList();
+}
+
+function clearSkillWorkerSelection() {
+  setSkillWorkerSelectionSet(new Set());
+  renderSkillWorkersList();
+}
+
+async function applyBulkShiftForSkillWorkers() {
+  const selected = getSkillWorkerSelectionSet();
+  if (selected.size === 0) {
+    throw new Error("Zaznacz pracownikow do przypisania zmiany.");
+  }
+  const assignedShift = clamp(toInt(el.skillWorkersBulkShiftSelect?.value || 1), 1, 3);
+  await api("/api/skills/workers/bulk-shift", {
+    method: "PUT",
+    body: {
+      workerIds: Array.from(selected),
+      assignedShift,
+    },
+  });
+  if (el.skillWorkersBulkStatus) {
+    el.skillWorkersBulkStatus.textContent = `Przypisano zmiane ${assignedShift} dla ${selected.size} pracownikow.`;
+  }
   await reloadAndRender();
 }
 
@@ -1042,6 +1126,9 @@ function startSkillWorkerEdit(workerId) {
     const validDepartment = departments.includes(worker.department) ? worker.department : departments[0] || DEPARTMENTS[0];
     el.skillWorkerDepartmentSelect.value = validDepartment;
   }
+  if (el.skillWorkerAssignedShiftSelect) {
+    el.skillWorkerAssignedShiftSelect.value = String(clamp(toInt(worker.assignedShift || 1), 1, 3));
+  }
   renderSkillWorkerForm();
   el.skillWorkerNameInput?.focus();
 }
@@ -1062,6 +1149,9 @@ function resetSkillWorkerFormState() {
   if (el.skillWorkerActiveInput) {
     el.skillWorkerActiveInput.checked = true;
   }
+  if (el.skillWorkerAssignedShiftSelect) {
+    el.skillWorkerAssignedShiftSelect.value = "1";
+  }
   Array.from(el.skillWorkerSkillsWrap?.querySelectorAll("input[data-skill-level='1']") || []).forEach((input) => {
     input.value = "0";
   });
@@ -1076,6 +1166,9 @@ async function deleteSkillWorker(workerId) {
   if (!targetId) {
     return;
   }
+  const selected = getSkillWorkerSelectionSet();
+  selected.delete(targetId);
+  setSkillWorkerSelectionSet(selected);
   await api(`/api/skills/workers/${encodeURIComponent(targetId)}`, { method: "DELETE" });
   if (ui.editingSkillWorkerId === targetId) {
     resetSkillWorkerFormState();
@@ -2363,6 +2456,7 @@ function normalizeSkillWorkers(raw) {
       : departments[0] || DEPARTMENTS[0];
     const primaryStationIdRaw = String(item.primaryStationId || item.primary_station_id || "").trim();
     const primaryStationId = stationIds.has(primaryStationIdRaw) ? primaryStationIdRaw : "";
+    const assignedShift = clamp(toInt(item.assignedShift ?? item.assigned_shift ?? 1), 1, 3);
     const skillMap = {};
     if (item.skills && typeof item.skills === "object" && !Array.isArray(item.skills)) {
       Object.entries(item.skills).forEach(([rawStationId, rawLevel]) => {
@@ -2381,6 +2475,7 @@ function normalizeSkillWorkers(raw) {
       name: String(item.name || "").trim(),
       department,
       primaryStationId,
+      assignedShift,
       active: item.active !== false,
       skills: skillMap,
     });
@@ -4421,11 +4516,19 @@ function renderSkillWorkerForm() {
   if (!selectedDepartment) {
     selectedDepartment = departments.includes(workerDepartment) ? workerDepartment : departments[0] || DEPARTMENTS[0];
   }
+  const selectedAssignedShift = clamp(
+    toInt(el.skillWorkerAssignedShiftSelect?.value || editingWorker?.assignedShift || 1),
+    1,
+    3,
+  );
   if (el.skillWorkerDepartmentSelect) {
     el.skillWorkerDepartmentSelect.innerHTML = departments.map(
       (department) => `<option value="${escapeHtml(department)}">${escapeHtml(department)}</option>`,
     ).join("");
     el.skillWorkerDepartmentSelect.value = selectedDepartment;
+  }
+  if (el.skillWorkerAssignedShiftSelect) {
+    el.skillWorkerAssignedShiftSelect.value = String(selectedAssignedShift);
   }
   const stations = (Array.isArray(state.stations) ? state.stations : []).filter(
     (station) => station?.active !== false && String(station?.department || "").trim() === selectedDepartment,
@@ -4513,8 +4616,11 @@ function renderSkillWorkersList() {
   }
   if (!Array.isArray(state.skillWorkers) || state.skillWorkers.length === 0) {
     el.skillWorkersList.innerHTML = "<p>Brak pracownikow w matrycy umiejetnosci.</p>";
+    updateSkillWorkerSelectionStatus();
     return;
   }
+  const selected = getSkillWorkerSelectionSet();
+  setSkillWorkerSelectionSet(selected);
   const stationNameById = {};
   (state.stations || []).forEach((station) => {
     stationNameById[station.id] = station.name;
@@ -4543,11 +4649,18 @@ function renderSkillWorkersList() {
       const primaryStationName = worker.primaryStationId
         ? stationNameById[worker.primaryStationId] || worker.primaryStationId
         : "Brak przypisania";
+      const assignedShift = clamp(toInt(worker.assignedShift || 1), 1, 3);
       const activeText = worker.active === false ? "Nieaktywny" : "Aktywny";
+      const checkedAttr = selected.has(String(worker.id || "")) ? "checked" : "";
       return `
         <li>
+          <label class="inline-checkbox">
+            <input type="checkbox" data-action="select-skill-worker" data-worker-id="${escapeHtml(worker.id)}" ${checkedAttr} />
+            Zaznacz
+          </label>
           <strong>${escapeHtml(worker.name || "-")}</strong>
           <span> | Dzial: ${escapeHtml(worker.department || "-")}</span>
+          <span> | Zmiana: ${assignedShift}</span>
           <span> | Stanowisko glowne: ${escapeHtml(primaryStationName)}</span>
           <span> | Status: ${escapeHtml(activeText)}</span>
           <span> | Umiejetnosci: ${escapeHtml(summary)}</span>
@@ -4560,6 +4673,7 @@ function renderSkillWorkersList() {
     })
     .join("");
   el.skillWorkersList.innerHTML = `<ul>${rows}</ul>`;
+  updateSkillWorkerSelectionStatus();
 }
 
 function ensureSkillsAllocationDefaults() {
@@ -4597,6 +4711,11 @@ function ensureSkillAvailabilityDefaults() {
 }
 
 function skillAvailabilityMinutes(workerId, date, shift) {
+  const worker = (state.skillWorkers || []).find((item) => String(item?.id || "").trim() === String(workerId || "").trim());
+  const assignedShift = clamp(toInt(worker?.assignedShift || 1), 1, 3);
+  if (shift !== assignedShift) {
+    return 0;
+  }
   const key = String(shift);
   const explicit = state.skillAvailability?.[workerId]?.[date];
   if (explicit && Object.prototype.hasOwnProperty.call(explicit, key)) {
@@ -4667,6 +4786,8 @@ function renderSkillAvailabilityCalendar() {
     el.skillAvailabilityGridWrap.innerHTML = "<p>Nieprawidlowy zakres dat.</p>";
     return;
   }
+  const worker = (state.skillWorkers || []).find((item) => String(item?.id || "").trim() === workerId) || null;
+  const assignedShift = clamp(toInt(worker?.assignedShift || 1), 1, 3);
   const head = dates
     .map((date) => {
       const dt = toDate(date);
@@ -4677,9 +4798,11 @@ function renderSkillAvailabilityCalendar() {
     .join("");
   const rows = [1, 2, 3]
     .map((shift) => {
+      const editableShift = shift === assignedShift;
       const cells = dates
         .map((date) => {
           const value = skillAvailabilityMinutes(workerId, date, shift);
+          const readonlyAttr = editableShift ? "" : "disabled";
           return `
             <td>
               <input
@@ -4688,6 +4811,7 @@ function renderSkillAvailabilityCalendar() {
                 max="1440"
                 step="1"
                 value="${value}"
+                ${readonlyAttr}
                 data-skill-availability-cell="1"
                 data-worker-id="${escapeHtml(workerId)}"
                 data-date="${escapeHtml(date)}"
@@ -4697,7 +4821,8 @@ function renderSkillAvailabilityCalendar() {
           `;
         })
         .join("");
-      return `<tr><th>Zmiana ${shift}</th>${cells}</tr>`;
+      const shiftLabel = editableShift ? `Zmiana ${shift}` : `Zmiana ${shift} (nieprzypisana)`;
+      return `<tr><th>${shiftLabel}</th>${cells}</tr>`;
     })
     .join("");
   el.skillAvailabilityGridWrap.innerHTML = `
@@ -4714,7 +4839,7 @@ function renderSkillAvailabilityCalendar() {
     </div>
   `;
   if (el.skillAvailabilityStatus) {
-    el.skillAvailabilityStatus.textContent = "Wprowadz minuty dostepnosci i kliknij Zapisz kalendarz.";
+    el.skillAvailabilityStatus.textContent = `Wprowadz minuty dla przypisanej zmiany ${assignedShift} i kliknij Zapisz kalendarz.`;
   }
 }
 
@@ -4862,13 +4987,12 @@ function buildSkillsAllocationForDate(date, stations, workers) {
     if (!workerId || worker.active === false) {
       return;
     }
-    for (let shift = 1; shift <= 3; shift += 1) {
-      const available = skillAvailabilityMinutes(workerId, date, shift);
-      if (available <= 0) {
-        continue;
-      }
-      poolsByShift[shift][workerId] = available;
+    const assignedShift = clamp(toInt(worker.assignedShift || 1), 1, 3);
+    const available = skillAvailabilityMinutes(workerId, date, assignedShift);
+    if (available <= 0) {
+      return;
     }
+    poolsByShift[assignedShift][workerId] = available;
   });
 
   const workerById = Object.fromEntries(
