@@ -47,6 +47,7 @@ app.config["SESSION_COOKIE_SECURE"] = str(os.getenv("SESSION_COOKIE_SECURE", "fa
     "yes",
     "on",
 )
+app.config["SEND_FILE_MAX_AGE_DEFAULT"] = 0
 
 STATIONS = [
     {"id": "M1", "name": "Pila optymalizacyjna", "department": "Maszynownia"},
@@ -2007,6 +2008,16 @@ def require_api_authentication():
         g.current_user = None
         return jsonify({"error": "Brak dostepu do aktualnej bazy. Zaloguj sie ponownie."}), 403
     return None
+
+
+@app.after_request
+def apply_no_cache_headers(response):
+    path = str(request.path or "")
+    if path == "/" or path.endswith(".html") or path.endswith(".js") or path.endswith(".css"):
+        response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
+    return response
 
 
 @app.get("/")
