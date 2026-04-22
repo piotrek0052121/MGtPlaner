@@ -201,7 +201,10 @@ const el = {
   selectAllSkillWorkersBtn: document.querySelector("#selectAllSkillWorkersBtn"),
   clearSkillWorkersSelectionBtn: document.querySelector("#clearSkillWorkersSelectionBtn"),
   skillWorkersBulkShiftSelect: document.querySelector("#skillWorkersBulkShiftSelect"),
+  skillWorkersBulkShiftStartDate: document.querySelector("#skillWorkersBulkShiftStartDate"),
+  skillWorkersBulkShiftDays: document.querySelector("#skillWorkersBulkShiftDays"),
   applySkillWorkersBulkShiftBtn: document.querySelector("#applySkillWorkersBulkShiftBtn"),
+  applySkillWorkersBulkShiftRangeBtn: document.querySelector("#applySkillWorkersBulkShiftRangeBtn"),
   skillWorkersBulkStatus: document.querySelector("#skillWorkersBulkStatus"),
   skillsAllocationMode: document.querySelector("#skillsAllocationMode"),
   skillsAllocationAnchorDate: document.querySelector("#skillsAllocationAnchorDate"),
@@ -384,6 +387,9 @@ function bindActions() {
   el.selectAllSkillWorkersBtn?.addEventListener("click", selectAllSkillWorkers);
   el.clearSkillWorkersSelectionBtn?.addEventListener("click", clearSkillWorkerSelection);
   el.applySkillWorkersBulkShiftBtn?.addEventListener("click", () => safeAction(applyBulkShiftForSkillWorkers));
+  el.applySkillWorkersBulkShiftRangeBtn?.addEventListener("click", () => safeAction(applyBulkShiftRangeForSkillWorkers));
+  el.skillWorkersBulkShiftStartDate?.addEventListener("change", ensureSkillWorkersBulkRangeDefaults);
+  el.skillWorkersBulkShiftDays?.addEventListener("change", ensureSkillWorkersBulkRangeDefaults);
   el.runSkillsAllocationBtn?.addEventListener("click", renderSkillsAllocation);
   el.skillsAllocationMode?.addEventListener("change", renderSkillsAllocation);
   el.skillsAllocationAnchorDate?.addEventListener("change", renderSkillsAllocation);
@@ -1073,6 +1079,16 @@ function clearSkillWorkerSelection() {
   renderSkillWorkersList();
 }
 
+function ensureSkillWorkersBulkRangeDefaults() {
+  if (el.skillWorkersBulkShiftStartDate && !el.skillWorkersBulkShiftStartDate.value) {
+    el.skillWorkersBulkShiftStartDate.value = isoDate(new Date());
+  }
+  if (el.skillWorkersBulkShiftDays) {
+    const days = clamp(toInt(el.skillWorkersBulkShiftDays.value || 7), 1, 60);
+    el.skillWorkersBulkShiftDays.value = String(days);
+  }
+}
+
 async function applyBulkShiftForSkillWorkers() {
   const selected = getSkillWorkerSelectionSet();
   if (selected.size === 0) {
@@ -1087,7 +1103,38 @@ async function applyBulkShiftForSkillWorkers() {
     },
   });
   if (el.skillWorkersBulkStatus) {
-    el.skillWorkersBulkStatus.textContent = `Przypisano zmiane ${assignedShift} dla ${selected.size} pracownikow.`;
+    el.skillWorkersBulkStatus.textContent = `Przypisano zmiane bazowa ${assignedShift} dla ${selected.size} pracownikow.`;
+  }
+  await reloadAndRender();
+}
+
+async function applyBulkShiftRangeForSkillWorkers() {
+  const selected = getSkillWorkerSelectionSet();
+  if (selected.size === 0) {
+    throw new Error("Zaznacz pracownikow do przypisania zmiany w zakresie.");
+  }
+  ensureSkillWorkersBulkRangeDefaults();
+  const assignedShift = clamp(toInt(el.skillWorkersBulkShiftSelect?.value || 1), 1, 3);
+  const startDate = normalizeOptionalDate(el.skillWorkersBulkShiftStartDate?.value);
+  const days = clamp(toInt(el.skillWorkersBulkShiftDays?.value || 7), 1, 60);
+  if (!startDate) {
+    throw new Error("Wybierz date startu zakresu.");
+  }
+  const endDate = isoDate(addDays(startDate, days - 1));
+  await api("/api/skills/workers/bulk-shift-range", {
+    method: "PUT",
+    body: {
+      workerIds: Array.from(selected),
+      assignedShift,
+      startDate,
+      endDate,
+      days,
+    },
+  });
+  if (el.skillWorkersBulkStatus) {
+    el.skillWorkersBulkStatus.textContent = `Przypisano zmiane ${assignedShift} dla ${selected.size} pracownikow (${formatDate(
+      startDate,
+    )} - ${formatDate(endDate)}).`;
   }
   await reloadAndRender();
 }
@@ -4627,6 +4674,7 @@ function renderSkillWorkersList() {
   if (!el.skillWorkersList) {
     return;
   }
+  ensureSkillWorkersBulkRangeDefaults();
   if (!Array.isArray(state.skillWorkers) || state.skillWorkers.length === 0) {
     el.skillWorkersList.innerHTML = "<p>Brak pracownikow w matrycy umiejetnosci.</p>";
     updateSkillWorkerSelectionStatus();
@@ -4726,17 +4774,20 @@ function ensureSkillAvailabilityDefaults() {
 function skillAvailabilityMinutes(workerId, date, shift) {
   const worker = (state.skillWorkers || []).find((item) => String(item?.id || "").trim() === String(workerId || "").trim());
   const assignedShift = clamp(toInt(worker?.assignedShift || 1), 1, 3);
-  if (shift !== assignedShift) {
-    return 0;
-  }
   const dayShifts = clamp(toInt(shiftsForDate(date)), 0, 3);
   if (dayShifts <= 0 && !hasAnyStationOvertimeOnDate(date)) {
     return 0;
   }
   const key = String(shift);
-  const explicit = state.skillAvailability?.[workerId]?.[date];
-  if (explicit && Object.prototype.hasOwnProperty.call(explicit, key)) {
-    return clamp(toInt(explicit[key]), 0, 1440);
+  const explicitDay = state.skillAvailability?.[workerId]?.[date];
+  if (explicitDay && typeof explicitDay === "object") {
+    if (Object.prototype.hasOwnProperty.call(explicitDay, key)) {
+      return clamp(toInt(explicitDay[key]), 0, 1440);
+    }
+    return 0;
+  }
+  if (shift !== assignedShift) {
+    return 0;
   }
   return clamp(toInt(state.settings?.minutesPerShift), 0, 1440);
 }
@@ -4799,8 +4850,6 @@ function renderSkillAvailabilityCalendar() {
     el.skillAvailabilityGridWrap.innerHTML = "<p>Nieprawidlowy zakres dat.</p>";
     return;
   }
-  const worker = (state.skillWorkers || []).find((item) => String(item?.id || "").trim() === workerId) || null;
-  const assignedShift = clamp(toInt(worker?.assignedShift || 1), 1, 3);
   const head = dates
     .map((date) => {
       const dt = toDate(date);
@@ -4811,11 +4860,9 @@ function renderSkillAvailabilityCalendar() {
     .join("");
   const rows = [1, 2, 3]
     .map((shift) => {
-      const editableShift = shift === assignedShift;
       const cells = dates
         .map((date) => {
           const value = skillAvailabilityMinutes(workerId, date, shift);
-          const readonlyAttr = editableShift ? "" : "disabled";
           return `
             <td>
               <input
@@ -4824,7 +4871,6 @@ function renderSkillAvailabilityCalendar() {
                 max="1440"
                 step="1"
                 value="${value}"
-                ${readonlyAttr}
                 data-skill-availability-cell="1"
                 data-worker-id="${escapeHtml(workerId)}"
                 data-date="${escapeHtml(date)}"
@@ -4834,8 +4880,7 @@ function renderSkillAvailabilityCalendar() {
           `;
         })
         .join("");
-      const shiftLabel = editableShift ? `Zmiana ${shift}` : `Zmiana ${shift} (nieprzypisana)`;
-      return `<tr><th>${shiftLabel}</th>${cells}</tr>`;
+      return `<tr><th>Zmiana ${shift}</th>${cells}</tr>`;
     })
     .join("");
   el.skillAvailabilityGridWrap.innerHTML = `
@@ -4852,7 +4897,7 @@ function renderSkillAvailabilityCalendar() {
     </div>
   `;
   if (el.skillAvailabilityStatus) {
-    el.skillAvailabilityStatus.textContent = `Wprowadz minuty dla przypisanej zmiany ${assignedShift} i kliknij Zapisz kalendarz.`;
+    el.skillAvailabilityStatus.textContent = `Edytujesz minuty dziennie dla zmian 1/2/3. W danym dniu plan przyjmie jedna zmiane pracownika (najwieksza liczba minut).`;
   }
 }
 
@@ -5000,12 +5045,13 @@ function buildSkillsAllocationForDate(date, stations, workers) {
     if (!workerId || worker.active === false) {
       return;
     }
-    const assignedShift = clamp(toInt(worker.assignedShift || 1), 1, 3);
-    const available = skillAvailabilityMinutes(workerId, date, assignedShift);
-    if (available <= 0) {
-      return;
+    for (let shift = 1; shift <= 3; shift += 1) {
+      const available = skillAvailabilityMinutes(workerId, date, shift);
+      if (available <= 0) {
+        continue;
+      }
+      poolsByShift[shift][workerId] = available;
     }
-    poolsByShift[assignedShift][workerId] = available;
   });
 
   const workerById = Object.fromEntries(

@@ -371,7 +371,16 @@
                     <option value="3">Zmiana 3</option>
                   </select>
                 </label>
-                <button id="applySkillWorkersBulkShiftBtn" type="button">Przypisz zmiane zaznaczonym</button>
+                <button id="applySkillWorkersBulkShiftBtn" type="button">Ustaw zmiane bazowa</button>
+                <label>
+                  Start
+                  <input type="date" id="skillWorkersBulkShiftStartDate" />
+                </label>
+                <label>
+                  Dni
+                  <input type="number" id="skillWorkersBulkShiftDays" min="1" max="60" step="1" value="7" />
+                </label>
+                <button id="applySkillWorkersBulkShiftRangeBtn" type="button">Przypisz zmiane w zakresie</button>
               </div>
               <p id="skillWorkersBulkStatus" class="skills-level-hint">Brak zaznaczonych pracownikow.</p>
               <div id="skillWorkersList" class="simple-list"></div>
@@ -379,7 +388,7 @@
 
             <div class="card">
               <h2>Dostepnosc pracownikow (kalendarz)</h2>
-              <p>Ustaw minuty dostepnosci dla konkretnej zmiany i dnia.</p>
+              <p>Ustaw minuty dostepnosci dla dnia i zmiany (1/2/3). Mozesz planowac zmiany inaczej w kolejnych dniach.</p>
               <div class="inline-controls">
                 <label>
                   Pracownik

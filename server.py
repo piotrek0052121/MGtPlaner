@@ -5,7 +5,7 @@ import os
 import re
 import sqlite3
 import uuid
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from urllib.parse import quote
 
@@ -3512,6 +3512,92 @@ def api_bulk_update_skill_worker_shift():
     return jsonify({"ok": True, "updated": updated, "assignedShift": assigned_shift})
 
 
+@app.put("/api/skills/workers/bulk-shift-range")
+def api_bulk_update_skill_worker_shift_range():
+    payload = request.get_json(force=True)
+    raw_ids = payload.get("workerIds")
+    if not isinstance(raw_ids, list):
+        return jsonify({"error": "Lista pracownikow jest wymagana."}), 400
+
+    worker_ids = []
+    for value in raw_ids:
+        worker_id = str(value or "").strip()
+        if worker_id and worker_id not in worker_ids:
+            worker_ids.append(worker_id)
+    if len(worker_ids) == 0:
+        return jsonify({"error": "Zaznacz przynajmniej jednego pracownika."}), 400
+
+    assigned_shift = clamp_int(payload.get("assignedShift"), 1, 3, 1)
+    start_date = normalize_optional_date(payload.get("startDate"))
+    end_date = normalize_optional_date(payload.get("endDate"))
+    days_count = clamp_int(payload.get("days"), 1, 60, 7)
+
+    if not start_date or not is_valid_iso_date(start_date):
+        return jsonify({"error": "Nieprawidlowa data startu."}), 400
+    if not end_date:
+        end_date = (datetime.strptime(start_date, "%Y-%m-%d").date() + timedelta(days=days_count - 1)).isoformat()
+    if not is_valid_iso_date(end_date):
+        return jsonify({"error": "Nieprawidlowa data konca."}), 400
+    if end_date < start_date:
+        return jsonify({"error": "Zakres dat jest nieprawidlowy."}), 400
+
+    date_list = iter_iso_dates(start_date, end_date)
+    if len(date_list) == 0:
+        return jsonify({"error": "Zakres dat jest pusty."}), 400
+
+    placeholders = ",".join("?" for _ in worker_ids)
+    connection = db()
+    existing_rows = connection.execute(
+        f"SELECT id FROM skill_workers WHERE id IN ({placeholders})",
+        worker_ids,
+    ).fetchall()
+    existing_worker_ids = [str(row["id"] or "").strip() for row in existing_rows if str(row["id"] or "").strip()]
+    if len(existing_worker_ids) == 0:
+        connection.close()
+        return jsonify({"error": "Nie znaleziono zaznaczonych pracownikow."}), 404
+
+    settings = get_settings(connection)
+    default_minutes = clamp_int(settings.get("minutes_per_shift"), 0, 1440, 480)
+
+    connection.execute(
+        f"UPDATE skill_workers SET assigned_shift = ? WHERE id IN ({','.join('?' for _ in existing_worker_ids)})",
+        (assigned_shift, *existing_worker_ids),
+    )
+
+    rows_to_insert = []
+    for worker_id in existing_worker_ids:
+        connection.execute(
+            "DELETE FROM skill_worker_availability WHERE worker_id = ? AND day >= ? AND day <= ?",
+            (worker_id, start_date, end_date),
+        )
+        for day in date_list:
+            for shift in (1, 2, 3):
+                minutes = default_minutes if shift == assigned_shift else 0
+                rows_to_insert.append((worker_id, day, shift, minutes))
+
+    if rows_to_insert:
+        connection.executemany(
+            """
+            INSERT INTO skill_worker_availability (worker_id, day, shift, minutes)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(worker_id, day, shift) DO UPDATE SET minutes = excluded.minutes
+            """,
+            rows_to_insert,
+        )
+
+    connection.commit()
+    connection.close()
+    return jsonify(
+        {
+            "ok": True,
+            "updated": len(existing_worker_ids),
+            "assignedShift": assigned_shift,
+            "startDate": start_date,
+            "endDate": end_date,
+        }
+    )
+
+
 @app.delete("/api/skills/workers/<worker_id>")
 def api_delete_skill_worker(worker_id):
     worker_id = str(worker_id or "").strip()
@@ -3551,6 +3637,7 @@ def api_upsert_skill_availability_bulk():
         return jsonify({"error": "Zakres dat jest nieprawidlowy."}), 400
 
     normalized = []
+    by_date = {}
     for item in entries:
         if not isinstance(item, dict):
             continue
@@ -3559,7 +3646,21 @@ def api_upsert_skill_availability_bulk():
             continue
         shift = clamp_int(item.get("shift"), 1, 3, 1)
         minutes = clamp_int(item.get("minutes"), 0, 1440, 0)
-        normalized.append((worker_id, date_value, shift, minutes))
+        if date_value not in by_date:
+            by_date[date_value] = {1: 0, 2: 0, 3: 0}
+        by_date[date_value][shift] = minutes
+
+    for date_value in sorted(by_date.keys()):
+        day_map = by_date[date_value]
+        positive = [(shift, minutes) for shift, minutes in day_map.items() if minutes > 0]
+        if len(positive) > 1:
+            max_minutes = max(minutes for _, minutes in positive)
+            selected_shift = min(shift for shift, minutes in positive if minutes == max_minutes)
+            for shift in (1, 2, 3):
+                normalized.append((worker_id, date_value, shift, day_map[shift] if shift == selected_shift else 0))
+        else:
+            for shift in (1, 2, 3):
+                normalized.append((worker_id, date_value, shift, day_map[shift]))
 
     connection = db()
     row = connection.execute("SELECT id FROM skill_workers WHERE id = ?", (worker_id,)).fetchone()
@@ -4095,6 +4196,18 @@ def normalize_station_overtime(value):
         if day_map:
             cleaned[date_value] = day_map
     return cleaned
+
+
+def iter_iso_dates(start_date, end_date):
+    current = datetime.strptime(str(start_date), "%Y-%m-%d").date()
+    stop = datetime.strptime(str(end_date), "%Y-%m-%d").date()
+    if stop < current:
+        return []
+    days = []
+    while current <= stop:
+        days.append(current.isoformat())
+        current = current + timedelta(days=1)
+    return days
 
 
 def is_valid_iso_date(value):
