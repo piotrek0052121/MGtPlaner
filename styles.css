@@ -133,10 +133,11 @@ h1 {
 
 .header-stats {
   display: grid;
-  grid-template-columns: repeat(2, minmax(220px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(180px, 280px));
   gap: 10px;
   width: 100%;
   margin-left: 0;
+  justify-content: start;
 }
 
 .chip {
@@ -241,7 +242,7 @@ h1 {
 }
 
 .dashboard-grid {
-  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
 }
 
 .card {
@@ -2141,7 +2142,7 @@ pre {
 @media (max-width: 980px) {
   .header-stats {
     width: 100%;
-    grid-template-columns: repeat(2, minmax(130px, 1fr));
+    grid-template-columns: repeat(2, minmax(150px, 1fr));
   }
 
   .layout {
