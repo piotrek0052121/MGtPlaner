@@ -973,24 +973,7 @@ function collectSkillLevelsFromForm() {
 }
 
 function availableSkillDepartments() {
-  const activeStations = (state.stations || []).filter((station) => station?.active !== false);
-  const fromStations = Array.from(
-    new Set(
-      activeStations
-        .map((station) => String(station?.department || "").trim())
-        .filter((department) => department.length > 0),
-    ),
-  );
-  if (fromStations.length === 0) {
-    return DEPARTMENTS.slice();
-  }
-  const ordered = DEPARTMENTS.filter((department) => fromStations.includes(department));
-  fromStations.forEach((department) => {
-    if (!ordered.includes(department)) {
-      ordered.push(department);
-    }
-  });
-  return ordered.length > 0 ? ordered : DEPARTMENTS.slice();
+  return DEPARTMENTS.slice();
 }
 
 async function saveSkillWorker() {
@@ -1115,7 +1098,7 @@ async function createUser() {
     name: String(fd.get("name") || "").trim(),
     login: String(fd.get("login") || "").trim(),
     password: String(fd.get("password") || ""),
-    department: String(fd.get("department") || "Dokumentacja"),
+    department: String(fd.get("department") || DEPARTMENTS[0]),
     role,
     canCreateDatabases: role === "admin" ? true : toBoolean(fd.get("canCreateDatabases")),
     visibleSections,
@@ -1183,7 +1166,9 @@ function startUserEdit(userId) {
     passwordInput.value = "";
   }
   if (departmentSelect) {
-    departmentSelect.value = user.department || "Dokumentacja";
+    departmentSelect.value = DEPARTMENTS.includes(String(user.department || "").trim())
+      ? String(user.department || "").trim()
+      : DEPARTMENTS[0];
   }
   if (roleSelect) {
     roleSelect.value = String(user.role || "user").toLowerCase() === "admin" ? "admin" : "user";

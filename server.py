@@ -703,7 +703,17 @@ def initialize(target_db_path=None):
     connection.execute("UPDATE users SET active = COALESCE(active, 1)")
     connection.execute("UPDATE users SET can_create_databases = COALESCE(can_create_databases, 0)")
     connection.execute("UPDATE users SET can_create_databases = 1 WHERE LOWER(COALESCE(role, '')) = 'admin'")
-    connection.execute("UPDATE users SET department = 'Dokumentacja' WHERE department = 'Planowanie'")
+    connection.execute("UPDATE users SET department = 'Maszynownia' WHERE department = 'Planowanie'")
+    user_department_placeholders = ",".join("?" for _ in DEPARTMENTS)
+    connection.execute(
+        f"""
+        UPDATE users
+        SET department = 'Maszynownia'
+        WHERE COALESCE(department, '') = ''
+           OR department NOT IN ({user_department_placeholders})
+        """,
+        tuple(DEPARTMENTS),
+    )
 
     connection.execute(
         """
@@ -1188,7 +1198,7 @@ def upsert_user_row_to_database(target_db_path, source_row):
             """,
             (
                 str(source.get("name") or "").strip() or "Uzytkownik",
-                str(source.get("department") or "").strip() or "Dokumentacja",
+                normalize_standard_department(source.get("department")),
                 str(source.get("password_hash") or "").strip() or hash_password("admin"),
                 str(source.get("role") or "user").strip().lower() if str(source.get("role") or "").strip() else "user",
                 str(source.get("permissions_json") or "[]"),
@@ -1210,7 +1220,7 @@ def upsert_user_row_to_database(target_db_path, source_row):
             (
                 source_id,
                 str(source.get("name") or "").strip() or "Uzytkownik",
-                str(source.get("department") or "").strip() or "Dokumentacja",
+                normalize_standard_department(source.get("department")),
                 login_value,
                 str(source.get("password_hash") or "").strip() or hash_password("admin"),
                 str(source.get("role") or "user").strip().lower() if str(source.get("role") or "").strip() else "user",
@@ -2973,7 +2983,7 @@ def api_create_database():
                 (
                     str(row["id"] or uuid.uuid4()),
                     str(row["name"] or "").strip() or "Uzytkownik",
-                    str(row["department"] or "").strip() or "Dokumentacja",
+                    normalize_standard_department(row["department"]),
                     str(row["login"] or "").strip(),
                     str(row["password_hash"] or "").strip(),
                     str(row["role"] or "user").strip().lower() if str(row["role"] or "").strip() else "user",
@@ -3062,7 +3072,7 @@ def api_create_database():
             ).fetchone()
             creator_payload = (
                 str(creator_row["name"] or "").strip() or "Uzytkownik",
-                str(creator_row["department"] or "").strip() or "Dokumentacja",
+                normalize_standard_department(creator_row["department"]),
                 str(creator_row["password_hash"] or "").strip() or hash_password("admin"),
                 str(creator_row["role"] or "user").strip().lower() if str(creator_row["role"] or "").strip() else "user",
                 str(creator_row["permissions_json"] or "[]"),
@@ -3172,15 +3182,18 @@ def require_admin_user_management():
     return None
 
 
-def normalize_skill_department(value, allowed_departments=None):
-    allowed = [str(item or "").strip() for item in (allowed_departments or DEPARTMENTS)]
-    allowed = [item for item in allowed if item]
+def normalize_standard_department(value):
+    allowed = [str(item or "").strip() for item in DEPARTMENTS if str(item or "").strip()]
     if not allowed:
-        allowed = DEPARTMENTS[:]
+        return "Maszynownia"
     department = str(value or "").strip()
     if department in allowed:
         return department
     return allowed[0]
+
+
+def normalize_skill_department(value):
+    return normalize_standard_department(value)
 
 
 def normalize_skills_payload(raw_skills, valid_station_ids):
@@ -3202,12 +3215,7 @@ def upsert_skill_worker(connection, worker_id, payload):
     worker_name = str(payload.get("name", "")).strip()
     if not worker_name:
         return "Imie i nazwisko pracownika jest wymagane.", 400
-    station_departments = []
-    for station in get_stations(connection):
-        department = str(station.get("department") or "").strip()
-        if department and department not in station_departments:
-            station_departments.append(department)
-    department = normalize_skill_department(payload.get("department"), station_departments)
+    department = normalize_skill_department(payload.get("department"))
     active = to_bool(payload.get("active", True))
     valid_station_ids = {item["id"] for item in get_stations(connection)}
     normalized_skills = normalize_skills_payload(payload.get("skills"), valid_station_ids)
@@ -3245,7 +3253,7 @@ def api_create_user():
     password = str(data.get("password", ""))
     if not login or not password:
         return jsonify({"error": "Login i haslo sa wymagane."}), 400
-    department = str(data.get("department", "Dokumentacja")).strip() or "Dokumentacja"
+    department = normalize_standard_department(data.get("department"))
     role = str(data.get("role", "user")).strip().lower()
     role = "admin" if role == "admin" else "user"
     can_create_databases = to_bool(data.get("canCreateDatabases"))
@@ -3296,7 +3304,7 @@ def api_update_user(user_id):
     if not login:
         return jsonify({"error": "Login jest wymagany."}), 400
     password = str(data.get("password", ""))
-    department = str(data.get("department", "Dokumentacja")).strip() or "Dokumentacja"
+    department = normalize_standard_department(data.get("department"))
     role = str(data.get("role", "user")).strip().lower()
     role = "admin" if role == "admin" else "user"
     can_create_databases = to_bool(data.get("canCreateDatabases"))
