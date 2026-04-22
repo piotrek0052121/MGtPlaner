@@ -973,9 +973,10 @@ function collectSkillLevelsFromForm() {
 }
 
 function availableSkillDepartments() {
+  const activeStations = (state.stations || []).filter((station) => station?.active !== false);
   const fromStations = Array.from(
     new Set(
-      (state.stations || [])
+      activeStations
         .map((station) => String(station?.department || "").trim())
         .filter((department) => department.length > 0),
     ),
@@ -4437,7 +4438,7 @@ function renderSkillWorkerForm() {
     el.skillWorkerDepartmentSelect.value = selectedDepartment;
   }
   const stations = (Array.isArray(state.stations) ? state.stations : []).filter(
-    (station) => String(station?.department || "").trim() === selectedDepartment,
+    (station) => station?.active !== false && String(station?.department || "").trim() === selectedDepartment,
   );
   if (editingWorker) {
     if (el.skillWorkerNameInput) {
