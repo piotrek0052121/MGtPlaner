@@ -111,6 +111,10 @@ body {
   padding: 18px 22px 6px;
 }
 
+.app-header > div:first-child {
+  min-width: 0;
+}
+
 .eyebrow {
   margin: 0;
   color: var(--ink-soft);
@@ -122,6 +126,8 @@ body {
 h1 {
   margin: 4px 0 0;
   font-size: clamp(24px, 3vw, 34px);
+  line-height: 1.15;
+  word-break: break-word;
   text-shadow: 0 2px 10px rgba(255, 255, 255, 0.55);
 }
 
@@ -583,12 +589,18 @@ td {
   text-align: left;
   padding: 10px 8px;
   font-size: 13px;
+}
+
+td {
   white-space: nowrap;
 }
 
 th {
   color: var(--ink-soft);
   font-weight: 700;
+  white-space: normal;
+  line-height: 1.25;
+  vertical-align: middle;
 }
 
 .report-cockpit {
