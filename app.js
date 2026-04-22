@@ -28,13 +28,25 @@ const MATERIALS = [
   { key: "hardware", label: "Okucia" },
   { key: "accessories", label: "Akcesoria" },
 ];
-const USER_VISIBLE_SECTIONS = ["orders", "kpi", "gantt", "reports", "execution", "feedback", "archive", "users", "settings"];
+const USER_VISIBLE_SECTIONS = [
+  "orders",
+  "kpi",
+  "gantt",
+  "reports",
+  "execution",
+  "skills",
+  "feedback",
+  "archive",
+  "users",
+  "settings",
+];
 const SECTION_LABELS = {
   orders: "Zamowienia",
   kpi: "KPI",
   gantt: "Gantt",
   reports: "Raporty",
   execution: "Wykonanie",
+  skills: "Matryca umiejetnosci",
   feedback: "Informacja zwrotna",
   archive: "Archiwum",
   users: "Uzytkownicy",
@@ -56,6 +68,8 @@ const state = {
   stationSettings: {},
   technologies: {},
   materialRules: {},
+  skillWorkers: [],
+  skillAvailability: {},
   databases: [],
   activeDatabaseKey: "default",
   databaseAccessMap: {},
@@ -82,6 +96,7 @@ const ui = {
   pendingAttachmentPositionId: "",
   ganttDaysBackToShow: 30,
   ganttDaysForwardToShow: 180,
+  editingSkillWorkerId: "",
 };
 
 const el = {
@@ -172,6 +187,26 @@ const el = {
   executionDepartmentBody: document.querySelector("#executionDepartmentBody"),
   executionOrdersBody: document.querySelector("#executionOrdersBody"),
   workloadTableBody: document.querySelector("#workloadTableBody"),
+  skillWorkerForm: document.querySelector("#skillWorkerForm"),
+  skillWorkerNameInput: document.querySelector("#skillWorkerNameInput"),
+  skillWorkerDepartmentSelect: document.querySelector("#skillWorkerDepartmentSelect"),
+  skillWorkerActiveInput: document.querySelector("#skillWorkerActiveInput"),
+  skillWorkerSkillsWrap: document.querySelector("#skillWorkerSkillsWrap"),
+  skillWorkerSubmitBtn: document.querySelector("#skillWorkerSubmitBtn"),
+  cancelSkillWorkerEditBtn: document.querySelector("#cancelSkillWorkerEditBtn"),
+  skillWorkersList: document.querySelector("#skillWorkersList"),
+  skillsAllocationMode: document.querySelector("#skillsAllocationMode"),
+  skillsAllocationAnchorDate: document.querySelector("#skillsAllocationAnchorDate"),
+  runSkillsAllocationBtn: document.querySelector("#runSkillsAllocationBtn"),
+  skillsAllocationSummary: document.querySelector("#skillsAllocationSummary"),
+  skillsAllocationTableBody: document.querySelector("#skillsAllocationTableBody"),
+  skillAvailabilityWorkerSelect: document.querySelector("#skillAvailabilityWorkerSelect"),
+  skillAvailabilityStartDate: document.querySelector("#skillAvailabilityStartDate"),
+  skillAvailabilityDays: document.querySelector("#skillAvailabilityDays"),
+  renderSkillAvailabilityBtn: document.querySelector("#renderSkillAvailabilityBtn"),
+  saveSkillAvailabilityBtn: document.querySelector("#saveSkillAvailabilityBtn"),
+  skillAvailabilityStatus: document.querySelector("#skillAvailabilityStatus"),
+  skillAvailabilityGridWrap: document.querySelector("#skillAvailabilityGridWrap"),
   feedbackOrderSelect: document.querySelector("#feedbackOrderSelect"),
   feedbackOrderStatusFilter: document.querySelector("#feedbackOrderStatusFilter"),
   feedbackOrderPositionStatusFilter: document.querySelector("#feedbackOrderPositionStatusFilter"),
@@ -330,6 +365,20 @@ function bindActions() {
   el.runExecutionBtn?.addEventListener("click", renderExecution);
   el.executionPeriodMode?.addEventListener("change", renderExecution);
   el.executionAnchorDate?.addEventListener("change", renderExecution);
+  el.skillWorkerForm?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    safeAction(saveSkillWorker);
+  });
+  el.cancelSkillWorkerEditBtn?.addEventListener("click", cancelSkillWorkerEdit);
+  el.skillWorkersList?.addEventListener("click", onSkillWorkersListClick);
+  el.runSkillsAllocationBtn?.addEventListener("click", renderSkillsAllocation);
+  el.skillsAllocationMode?.addEventListener("change", renderSkillsAllocation);
+  el.skillsAllocationAnchorDate?.addEventListener("change", renderSkillsAllocation);
+  el.renderSkillAvailabilityBtn?.addEventListener("click", renderSkillAvailabilityCalendar);
+  el.saveSkillAvailabilityBtn?.addEventListener("click", () => safeAction(saveSkillAvailabilityCalendar));
+  el.skillAvailabilityWorkerSelect?.addEventListener("change", renderSkillAvailabilityCalendar);
+  el.skillAvailabilityStartDate?.addEventListener("change", renderSkillAvailabilityCalendar);
+  el.skillAvailabilityDays?.addEventListener("change", renderSkillAvailabilityCalendar);
   el.feedbackOrderSelect.addEventListener("change", renderFeedbackPositions);
   el.feedbackOrderStatusFilter?.addEventListener("change", () => {
     renderOrderSelectors();
@@ -715,7 +764,10 @@ function resetLocalSessionState() {
   state.orders = [];
   state.feedbackEvents = [];
   state.users = [];
+  state.skillWorkers = [];
+  state.skillAvailability = {};
   state.stations = [];
+  state.settings = normalizeSettings({});
   state.stationSettings = {};
   state.technologies = {};
   state.materialRules = {};
@@ -735,6 +787,7 @@ function resetLocalSessionState() {
   ui.editingUserId = "";
   ui.orderDetailsEditMode = false;
   ui.pendingAttachmentPositionId = "";
+  ui.editingSkillWorkerId = "";
   ui.kpiFilter = null;
   closeModal("orderDetailsModal");
   closeModal("positionModal");
@@ -898,6 +951,139 @@ async function createPosition() {
   ui.editingPositionId = "";
   resetPositionFormState();
   closeModal("positionModal");
+  await reloadAndRender();
+}
+
+function collectSkillLevelsFromForm() {
+  const output = {};
+  const inputs = Array.from(el.skillWorkerSkillsWrap?.querySelectorAll("input[data-skill-level='1']") || []);
+  inputs.forEach((input) => {
+    const stationId = String(input.dataset.stationId || "").trim();
+    if (!stationId) {
+      return;
+    }
+    const level = clamp(toInt(input.value), 0, 3);
+    input.value = String(level);
+    if (level > 0) {
+      output[stationId] = level;
+    }
+  });
+  return output;
+}
+
+async function saveSkillWorker() {
+  if (!isLoggedIn()) {
+    throw new Error("Zaloguj sie, aby zapisac pracownika.");
+  }
+  if (!el.skillWorkerForm?.reportValidity()) {
+    return;
+  }
+  const payload = {
+    name: String(el.skillWorkerNameInput?.value || "").trim(),
+    department: String(el.skillWorkerDepartmentSelect?.value || DEPARTMENTS[0]),
+    active: Boolean(el.skillWorkerActiveInput?.checked),
+    skills: collectSkillLevelsFromForm(),
+  };
+  const editingId = String(ui.editingSkillWorkerId || "").trim();
+  if (editingId) {
+    await api(`/api/skills/workers/${encodeURIComponent(editingId)}`, {
+      method: "PUT",
+      body: payload,
+    });
+  } else {
+    await api("/api/skills/workers", {
+      method: "POST",
+      body: payload,
+    });
+  }
+  resetSkillWorkerFormState();
+  await reloadAndRender();
+}
+
+function onSkillWorkersListClick(event) {
+  const editBtn = event.target.closest("button[data-action='edit-skill-worker']");
+  if (editBtn) {
+    startSkillWorkerEdit(editBtn.dataset.workerId);
+    return;
+  }
+  const deleteBtn = event.target.closest("button[data-action='delete-skill-worker']");
+  if (!deleteBtn) {
+    return;
+  }
+  const workerId = String(deleteBtn.dataset.workerId || "").trim();
+  if (!workerId) {
+    return;
+  }
+  const worker = state.skillWorkers.find((item) => item.id === workerId);
+  const label = worker?.name || "pracownika";
+  if (!window.confirm(`Czy na pewno usunac ${label}?`)) {
+    return;
+  }
+  safeAction(() => deleteSkillWorker(workerId));
+}
+
+function startSkillWorkerEdit(workerId) {
+  const targetId = String(workerId || "").trim();
+  const worker = state.skillWorkers.find((item) => item.id === targetId);
+  if (!worker) {
+    return;
+  }
+  ui.editingSkillWorkerId = targetId;
+  if (el.skillWorkerNameInput) {
+    el.skillWorkerNameInput.value = worker.name || "";
+  }
+  if (el.skillWorkerDepartmentSelect) {
+    const validDepartment = DEPARTMENTS.includes(worker.department) ? worker.department : DEPARTMENTS[0];
+    el.skillWorkerDepartmentSelect.value = validDepartment;
+  }
+  if (el.skillWorkerActiveInput) {
+    el.skillWorkerActiveInput.checked = worker.active !== false;
+  }
+  Array.from(el.skillWorkerSkillsWrap?.querySelectorAll("input[data-skill-level='1']") || []).forEach((input) => {
+    const stationId = String(input.dataset.stationId || "").trim();
+    const level = clamp(toInt(worker.skills?.[stationId] || 0), 0, 3);
+    input.value = String(level);
+  });
+  if (el.skillWorkerSubmitBtn) {
+    el.skillWorkerSubmitBtn.textContent = "Zapisz pracownika";
+  }
+  el.cancelSkillWorkerEditBtn?.classList.remove("panel-hidden");
+  el.skillWorkerNameInput?.focus();
+}
+
+function cancelSkillWorkerEdit() {
+  resetSkillWorkerFormState();
+}
+
+function resetSkillWorkerFormState() {
+  ui.editingSkillWorkerId = "";
+  el.skillWorkerForm?.reset();
+  if (el.skillWorkerDepartmentSelect) {
+    el.skillWorkerDepartmentSelect.value = DEPARTMENTS.includes(el.skillWorkerDepartmentSelect.value)
+      ? el.skillWorkerDepartmentSelect.value
+      : DEPARTMENTS[0];
+  }
+  if (el.skillWorkerActiveInput) {
+    el.skillWorkerActiveInput.checked = true;
+  }
+  Array.from(el.skillWorkerSkillsWrap?.querySelectorAll("input[data-skill-level='1']") || []).forEach((input) => {
+    input.value = "0";
+  });
+  if (el.skillWorkerSubmitBtn) {
+    el.skillWorkerSubmitBtn.textContent = "Dodaj pracownika";
+  }
+  el.cancelSkillWorkerEditBtn?.classList.add("panel-hidden");
+}
+
+async function deleteSkillWorker(workerId) {
+  const targetId = String(workerId || "").trim();
+  if (!targetId) {
+    return;
+  }
+  await api(`/api/skills/workers/${encodeURIComponent(targetId)}`, { method: "DELETE" });
+  if (ui.editingSkillWorkerId === targetId) {
+    resetSkillWorkerFormState();
+  }
   await reloadAndRender();
 }
 
@@ -2053,6 +2239,8 @@ async function reloadState() {
   state.stationSettings = data.stationSettings || {};
   state.technologies = data.technologies || {};
   state.materialRules = normalizeMaterialRules(data.materialRules || {});
+  state.skillWorkers = normalizeSkillWorkers(data.skillWorkers || []);
+  state.skillAvailability = normalizeSkillAvailability(data.skillAvailability || []);
   state.databases = Array.isArray(data.databases) ? data.databases : [];
   state.activeDatabaseKey = String(data.activeDatabase || "default");
   state.databaseAccessMap = normalizeDatabaseAccessMap(data.databaseAccessMap || {});
@@ -2153,6 +2341,82 @@ function normalizeVisibleSections(raw) {
     if (!out.includes(value)) {
       out.push(value);
     }
+  });
+  return out;
+}
+
+function normalizeSkillWorkers(raw) {
+  if (!Array.isArray(raw)) {
+    return [];
+  }
+  const stationIds = new Set((state.stations || []).map((station) => String(station?.id || "").trim()));
+  const workers = [];
+  raw.forEach((item) => {
+    if (!item || typeof item !== "object") {
+      return;
+    }
+    const workerId = String(item.id || "").trim();
+    if (!workerId) {
+      return;
+    }
+    const department = DEPARTMENTS.includes(String(item.department || "").trim())
+      ? String(item.department || "").trim()
+      : DEPARTMENTS[0];
+    const skillMap = {};
+    if (item.skills && typeof item.skills === "object" && !Array.isArray(item.skills)) {
+      Object.entries(item.skills).forEach(([rawStationId, rawLevel]) => {
+        const stationId = String(rawStationId || "").trim();
+        if (!stationId || (stationIds.size > 0 && !stationIds.has(stationId))) {
+          return;
+        }
+        const level = clamp(toInt(rawLevel), 0, 3);
+        if (level > 0) {
+          skillMap[stationId] = level;
+        }
+      });
+    }
+    workers.push({
+      id: workerId,
+      name: String(item.name || "").trim(),
+      department,
+      active: item.active !== false,
+      skills: skillMap,
+    });
+  });
+  workers.sort((a, b) => {
+    const depDiff = String(a.department || "").localeCompare(String(b.department || ""), "pl", { sensitivity: "base" });
+    if (depDiff !== 0) {
+      return depDiff;
+    }
+    const nameDiff = String(a.name || "").localeCompare(String(b.name || ""), "pl", { sensitivity: "base" });
+    if (nameDiff !== 0) {
+      return nameDiff;
+    }
+    return String(a.id || "").localeCompare(String(b.id || ""));
+  });
+  return workers;
+}
+
+function normalizeSkillAvailability(raw) {
+  const out = {};
+  if (!Array.isArray(raw)) {
+    return out;
+  }
+  raw.forEach((item) => {
+    const workerId = String(item?.workerId || item?.worker_id || "").trim();
+    const date = normalizeOptionalDate(item?.date || item?.day);
+    const shift = clamp(toInt(item?.shift), 1, 3);
+    const minutes = clamp(toInt(item?.minutes), 0, 1440);
+    if (!workerId || !date) {
+      return;
+    }
+    if (!out[workerId]) {
+      out[workerId] = {};
+    }
+    if (!out[workerId][date]) {
+      out[workerId][date] = {};
+    }
+    out[workerId][date][String(shift)] = minutes;
   });
   return out;
 }
@@ -2585,6 +2849,12 @@ function renderAll() {
   ensureReportDefaults();
   renderReport();
   renderExecution();
+  renderSkillWorkerForm();
+  renderSkillWorkersList();
+  renderSkillAvailabilityControls();
+  renderSkillAvailabilityCalendar();
+  ensureSkillsAllocationDefaults();
+  renderSkillsAllocation();
   renderFeedbackPositions();
   renderUsers();
   renderDatabaseAccessMatrix();
@@ -4128,6 +4398,588 @@ function renderWorkload() {
           <td>${escapeHtml(station.name)}</td>
           <td>${escapeHtml(station.department)}</td>
           <td>${(workload[station.id] || 0).toFixed(1)}</td>
+        </tr>
+      `;
+    })
+    .join("");
+}
+
+function renderSkillWorkerForm() {
+  if (!el.skillWorkerForm || !el.skillWorkerSkillsWrap) {
+    return;
+  }
+  if (el.skillWorkerDepartmentSelect) {
+    const currentDepartment = String(el.skillWorkerDepartmentSelect.value || "").trim();
+    el.skillWorkerDepartmentSelect.innerHTML = DEPARTMENTS.map(
+      (department) => `<option value="${escapeHtml(department)}">${escapeHtml(department)}</option>`,
+    ).join("");
+    const validCurrent = DEPARTMENTS.includes(currentDepartment);
+    el.skillWorkerDepartmentSelect.value = validCurrent ? currentDepartment : DEPARTMENTS[0];
+  }
+
+  const stations = Array.isArray(state.stations) ? state.stations : [];
+  const editingWorker = state.skillWorkers.find((item) => item.id === String(ui.editingSkillWorkerId || "").trim()) || null;
+  if (!editingWorker && ui.editingSkillWorkerId) {
+    ui.editingSkillWorkerId = "";
+  }
+  if (editingWorker) {
+    if (el.skillWorkerNameInput) {
+      el.skillWorkerNameInput.value = editingWorker.name || "";
+    }
+    if (el.skillWorkerDepartmentSelect) {
+      el.skillWorkerDepartmentSelect.value = DEPARTMENTS.includes(editingWorker.department)
+        ? editingWorker.department
+        : DEPARTMENTS[0];
+    }
+    if (el.skillWorkerActiveInput) {
+      el.skillWorkerActiveInput.checked = editingWorker.active !== false;
+    }
+    if (el.skillWorkerSubmitBtn) {
+      el.skillWorkerSubmitBtn.textContent = "Zapisz pracownika";
+    }
+    el.cancelSkillWorkerEditBtn?.classList.remove("panel-hidden");
+  } else {
+    if (el.skillWorkerSubmitBtn) {
+      el.skillWorkerSubmitBtn.textContent = "Dodaj pracownika";
+    }
+    el.cancelSkillWorkerEditBtn?.classList.add("panel-hidden");
+  }
+
+  if (stations.length === 0) {
+    el.skillWorkerSkillsWrap.innerHTML = "<p>Brak stanowisk. Dodaj stanowiska w Ustawieniach.</p>";
+    if (el.skillWorkerSubmitBtn) {
+      el.skillWorkerSubmitBtn.disabled = true;
+    }
+    return;
+  }
+
+  const rows = stations
+    .map((station) => {
+      const level = clamp(toInt(editingWorker?.skills?.[station.id] || 0), 0, 3);
+      const activeBadge = station.active === false ? " (nieaktywne)" : "";
+      return `
+        <label class="skills-level-row">
+          <span class="skills-level-station">${escapeHtml(station.name)} (${escapeHtml(station.department)})${escapeHtml(activeBadge)}</span>
+          <input
+            type="number"
+            min="0"
+            max="3"
+            step="1"
+            value="${level}"
+            data-skill-level="1"
+            data-station-id="${escapeHtml(station.id)}"
+            title="0 = brak umiejetnosci, 1 = podstawowy, 2 = samodzielny, 3 = ekspert"
+          />
+        </label>
+      `;
+    })
+    .join("");
+  el.skillWorkerSkillsWrap.innerHTML = `
+    <p class="skills-level-hint">Poziom umiejetnosci: 0 (brak), 1 (podstawowy), 2 (samodzielny), 3 (ekspert)</p>
+    <div class="skills-level-list">${rows}</div>
+  `;
+  if (el.skillWorkerSubmitBtn) {
+    el.skillWorkerSubmitBtn.disabled = false;
+  }
+}
+
+function renderSkillWorkersList() {
+  if (!el.skillWorkersList) {
+    return;
+  }
+  if (!Array.isArray(state.skillWorkers) || state.skillWorkers.length === 0) {
+    el.skillWorkersList.innerHTML = "<p>Brak pracownikow w matrycy umiejetnosci.</p>";
+    return;
+  }
+  const stationNameById = {};
+  (state.stations || []).forEach((station) => {
+    stationNameById[station.id] = station.name;
+  });
+  const rows = state.skillWorkers
+    .slice()
+    .sort((a, b) => {
+      const depDiff = String(a.department || "").localeCompare(String(b.department || ""), "pl", { sensitivity: "base" });
+      if (depDiff !== 0) {
+        return depDiff;
+      }
+      return String(a.name || "").localeCompare(String(b.name || ""), "pl", { sensitivity: "base" });
+    })
+    .map((worker) => {
+      const entries = Object.entries(worker.skills || {})
+        .map(([stationId, level]) => ({
+          stationId,
+          level: clamp(toInt(level), 0, 3),
+          stationName: stationNameById[stationId] || stationId,
+        }))
+        .filter((item) => item.level > 0)
+        .sort((a, b) => b.level - a.level || a.stationName.localeCompare(b.stationName, "pl", { sensitivity: "base" }));
+      const summary = entries.length
+        ? entries.map((item) => `${item.stationName} (L${item.level})`).join(", ")
+        : "Brak stanowisk";
+      const activeText = worker.active === false ? "Nieaktywny" : "Aktywny";
+      return `
+        <li>
+          <strong>${escapeHtml(worker.name || "-")}</strong>
+          <span> | Dzial: ${escapeHtml(worker.department || "-")}</span>
+          <span> | Status: ${escapeHtml(activeText)}</span>
+          <span> | Umiejetnosci: ${escapeHtml(summary)}</span>
+          <span class="user-actions">
+            <button type="button" data-action="edit-skill-worker" data-worker-id="${escapeHtml(worker.id)}">Edytuj</button>
+            <button type="button" data-action="delete-skill-worker" data-worker-id="${escapeHtml(worker.id)}">Usun</button>
+          </span>
+        </li>
+      `;
+    })
+    .join("");
+  el.skillWorkersList.innerHTML = `<ul>${rows}</ul>`;
+}
+
+function ensureSkillsAllocationDefaults() {
+  if (el.skillsAllocationMode && !el.skillsAllocationMode.value) {
+    el.skillsAllocationMode.value = "day";
+  }
+  if (el.skillsAllocationAnchorDate && !el.skillsAllocationAnchorDate.value) {
+    el.skillsAllocationAnchorDate.value = normalizeOptionalDate(el.reportDate?.value) || isoDate(new Date());
+  }
+}
+
+function stationDemandForDateByStation(date) {
+  const output = {};
+  operationalOrders().forEach((order) => {
+    const stationDaily = order.calculation?.stationDaily || {};
+    Object.entries(stationDaily).forEach(([stationId, daily]) => {
+      const minutes = toFloat(daily?.[date] || 0);
+      if (minutes <= 0) {
+        return;
+      }
+      output[stationId] = (output[stationId] || 0) + minutes;
+    });
+  });
+  return output;
+}
+
+function ensureSkillAvailabilityDefaults() {
+  if (el.skillAvailabilityStartDate && !el.skillAvailabilityStartDate.value) {
+    el.skillAvailabilityStartDate.value = isoDate(new Date());
+  }
+  if (el.skillAvailabilityDays) {
+    const days = clamp(toInt(el.skillAvailabilityDays.value || 14), 1, 60);
+    el.skillAvailabilityDays.value = String(days);
+  }
+}
+
+function skillAvailabilityMinutes(workerId, date, shift) {
+  const key = String(shift);
+  const explicit = state.skillAvailability?.[workerId]?.[date];
+  if (explicit && Object.prototype.hasOwnProperty.call(explicit, key)) {
+    return clamp(toInt(explicit[key]), 0, 1440);
+  }
+  const allowedShifts = shiftsForDate(date);
+  if (shift > allowedShifts) {
+    return 0;
+  }
+  return clamp(toInt(state.settings?.minutesPerShift), 0, 1440);
+}
+
+function renderSkillAvailabilityControls() {
+  if (!el.skillAvailabilityWorkerSelect) {
+    return;
+  }
+  ensureSkillAvailabilityDefaults();
+  const workers = (state.skillWorkers || [])
+    .filter((worker) => worker.active !== false)
+    .sort((a, b) => String(a.name || "").localeCompare(String(b.name || ""), "pl", { sensitivity: "base" }));
+  const currentValue = String(el.skillAvailabilityWorkerSelect.value || "");
+  el.skillAvailabilityWorkerSelect.innerHTML =
+    workers.length === 0
+      ? '<option value="">Brak pracownikow</option>'
+      : workers.map((worker) => `<option value="${escapeHtml(worker.id)}">${escapeHtml(worker.name)}</option>`).join("");
+  if (workers.length === 0) {
+    el.skillAvailabilityWorkerSelect.value = "";
+    if (el.saveSkillAvailabilityBtn) {
+      el.saveSkillAvailabilityBtn.disabled = true;
+    }
+    if (el.renderSkillAvailabilityBtn) {
+      el.renderSkillAvailabilityBtn.disabled = true;
+    }
+    return;
+  }
+  const validCurrent = workers.some((worker) => worker.id === currentValue);
+  el.skillAvailabilityWorkerSelect.value = validCurrent ? currentValue : workers[0].id;
+  if (el.saveSkillAvailabilityBtn) {
+    el.saveSkillAvailabilityBtn.disabled = false;
+  }
+  if (el.renderSkillAvailabilityBtn) {
+    el.renderSkillAvailabilityBtn.disabled = false;
+  }
+}
+
+function availabilityCalendarDates() {
+  ensureSkillAvailabilityDefaults();
+  const start = normalizeOptionalDate(el.skillAvailabilityStartDate?.value) || isoDate(new Date());
+  const days = clamp(toInt(el.skillAvailabilityDays?.value || 14), 1, 60);
+  const end = isoDate(addDays(start, days - 1));
+  return dateRange(start, end);
+}
+
+function renderSkillAvailabilityCalendar() {
+  if (!el.skillAvailabilityGridWrap) {
+    return;
+  }
+  const workerId = String(el.skillAvailabilityWorkerSelect?.value || "").trim();
+  if (!workerId) {
+    el.skillAvailabilityGridWrap.innerHTML = "<p>Brak pracownikow do planowania dostepnosci.</p>";
+    if (el.skillAvailabilityStatus) {
+      el.skillAvailabilityStatus.textContent = "Brak danych.";
+    }
+    return;
+  }
+  const dates = availabilityCalendarDates();
+  if (dates.length === 0) {
+    el.skillAvailabilityGridWrap.innerHTML = "<p>Nieprawidlowy zakres dat.</p>";
+    return;
+  }
+  const head = dates
+    .map((date) => {
+      const dt = toDate(date);
+      const weekdayShort = ["Ndz", "Pon", "Wt", "Sr", "Czw", "Pt", "Sob"][dt.getDay()];
+      const cls = dt.getDay() === 0 ? "sun" : dt.getDay() === 6 ? "sat" : "";
+      return `<th class="${cls}">${escapeHtml(weekdayShort)}<br /><strong>${escapeHtml(formatDate(date))}</strong></th>`;
+    })
+    .join("");
+  const rows = [1, 2, 3]
+    .map((shift) => {
+      const cells = dates
+        .map((date) => {
+          const value = skillAvailabilityMinutes(workerId, date, shift);
+          return `
+            <td>
+              <input
+                type="number"
+                min="0"
+                max="1440"
+                step="1"
+                value="${value}"
+                data-skill-availability-cell="1"
+                data-worker-id="${escapeHtml(workerId)}"
+                data-date="${escapeHtml(date)}"
+                data-shift="${shift}"
+              />
+            </td>
+          `;
+        })
+        .join("");
+      return `<tr><th>Zmiana ${shift}</th>${cells}</tr>`;
+    })
+    .join("");
+  el.skillAvailabilityGridWrap.innerHTML = `
+    <div class="table-wrap">
+      <table class="skill-availability-table">
+        <thead>
+          <tr>
+            <th>Zmiana</th>
+            ${head}
+          </tr>
+        </thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>
+  `;
+  if (el.skillAvailabilityStatus) {
+    el.skillAvailabilityStatus.textContent = "Wprowadz minuty dostepnosci i kliknij Zapisz kalendarz.";
+  }
+}
+
+async function saveSkillAvailabilityCalendar() {
+  const workerId = String(el.skillAvailabilityWorkerSelect?.value || "").trim();
+  if (!workerId) {
+    throw new Error("Wybierz pracownika.");
+  }
+  const dates = availabilityCalendarDates();
+  if (dates.length === 0) {
+    throw new Error("Nieprawidlowy zakres dat.");
+  }
+  const entries = Array.from(el.skillAvailabilityGridWrap?.querySelectorAll("input[data-skill-availability-cell='1']") || []).map(
+    (input) => {
+      const date = String(input.dataset.date || "");
+      const shift = clamp(toInt(input.dataset.shift), 1, 3);
+      const minutes = clamp(toInt(input.value), 0, 1440);
+      input.value = String(minutes);
+      return { date, shift, minutes };
+    },
+  );
+  await api("/api/skills/availability/bulk", {
+    method: "PUT",
+    body: {
+      workerId,
+      startDate: dates[0],
+      endDate: dates[dates.length - 1],
+      entries,
+    },
+  });
+  if (el.skillAvailabilityStatus) {
+    el.skillAvailabilityStatus.textContent = "Kalendarz dostepnosci zapisany.";
+  }
+  await reloadAndRender();
+}
+
+function stationShiftCapacitiesForDate(station, date) {
+  const cfg = state.stationSettings?.[station.id] || { shiftCount: 2, peopleCount: 1 };
+  const peopleCount = Math.max(1, toInt(cfg.peopleCount));
+  const stationShiftLimit = clamp(toInt(cfg.shiftCount), 1, 3);
+  const dayShiftLimit = clamp(toInt(shiftsForDate(date)), 0, 3);
+  const overtime = clamp(toInt(stationOvertimeMinutesForDate(station.id, date)), 0, 1440);
+  const effectiveShiftCount = Math.min(stationShiftLimit, dayShiftLimit);
+  const base = Math.max(0, toInt(state.settings?.minutesPerShift)) * peopleCount;
+  const output = [];
+  if (effectiveShiftCount <= 0) {
+    if (overtime > 0) {
+      output.push({ shift: 1, capacity: overtime });
+    }
+    return output;
+  }
+  for (let shift = 1; shift <= effectiveShiftCount; shift += 1) {
+    const capacity = base + (shift === effectiveShiftCount ? overtime : 0);
+    output.push({ shift, capacity });
+  }
+  return output;
+}
+
+function buildShiftDemandRowsForDate(date, stations) {
+  const demandByStation = stationDemandForDateByStation(date);
+  const stationIndex = stationOrderIndexMap();
+  const rows = [];
+  stations.forEach((station) => {
+    let remainingDemand = Math.max(0, toFloat(demandByStation[station.id] || 0));
+    const shiftCaps = stationShiftCapacitiesForDate(station, date);
+    if (remainingDemand <= 0 && shiftCaps.length === 0) {
+      return;
+    }
+    if (shiftCaps.length === 0 && remainingDemand > 0) {
+      rows.push({
+        date,
+        shift: 1,
+        stationId: station.id,
+        stationName: station.name,
+        department: station.department,
+        demand: remainingDemand,
+        capacity: 0,
+      });
+      return;
+    }
+    shiftCaps.forEach((item) => {
+      const shiftDemand = Math.max(0, Math.min(remainingDemand, item.capacity));
+      if (shiftDemand > 0 || item.capacity > 0) {
+        rows.push({
+          date,
+          shift: item.shift,
+          stationId: station.id,
+          stationName: station.name,
+          department: station.department,
+          demand: shiftDemand,
+          capacity: item.capacity,
+        });
+      }
+      remainingDemand = Math.max(0, remainingDemand - shiftDemand);
+    });
+    if (remainingDemand > 0) {
+      const lastShift = shiftCaps.length > 0 ? shiftCaps[shiftCaps.length - 1].shift : 1;
+      rows.push({
+        date,
+        shift: lastShift,
+        stationId: station.id,
+        stationName: station.name,
+        department: station.department,
+        demand: remainingDemand,
+        capacity: 0,
+      });
+    }
+  });
+  rows.sort((a, b) => {
+    if (a.date !== b.date) {
+      return a.date.localeCompare(b.date);
+    }
+    if (a.shift !== b.shift) {
+      return a.shift - b.shift;
+    }
+    const demandDiff = b.demand - a.demand;
+    if (Math.abs(demandDiff) > 0.0001) {
+      return demandDiff;
+    }
+    return (stationIndex[a.stationId] ?? 999999) - (stationIndex[b.stationId] ?? 999999);
+  });
+  return rows;
+}
+
+function workersSortedForStation(station, candidates) {
+  return candidates.sort((a, b) => {
+    const sameDepartmentA = String(a.department || "") === String(station.department || "") ? 1 : 0;
+    const sameDepartmentB = String(b.department || "") === String(station.department || "") ? 1 : 0;
+    if (sameDepartmentA !== sameDepartmentB) {
+      return sameDepartmentB - sameDepartmentA;
+    }
+    const levelDiff = clamp(toInt(b.skills?.[station.id] || 0), 0, 3) - clamp(toInt(a.skills?.[station.id] || 0), 0, 3);
+    if (levelDiff !== 0) {
+      return levelDiff;
+    }
+    return String(a.name || "").localeCompare(String(b.name || ""), "pl", { sensitivity: "base" });
+  });
+}
+
+function buildSkillsAllocationForDate(date, stations, workers) {
+  const shiftRows = buildShiftDemandRowsForDate(date, stations);
+  const poolsByShift = { 1: {}, 2: {}, 3: {} };
+  workers.forEach((worker) => {
+    const workerId = String(worker.id || "").trim();
+    if (!workerId || worker.active === false) {
+      return;
+    }
+    for (let shift = 1; shift <= 3; shift += 1) {
+      const available = skillAvailabilityMinutes(workerId, date, shift);
+      if (available <= 0) {
+        continue;
+      }
+      poolsByShift[shift][workerId] = available;
+    }
+  });
+
+  const workerById = Object.fromEntries(
+    workers
+      .map((worker) => [String(worker.id || "").trim(), worker])
+      .filter(([workerId]) => Boolean(workerId)),
+  );
+  const stationById = Object.fromEntries(stations.map((station) => [station.id, station]));
+  const outputRows = shiftRows.map((row) => ({ ...row, assignedMinutes: 0, requiredWorkers: 0, assignedWorkers: [], missingWorkers: 0 }));
+
+  outputRows.forEach((row) => {
+    const shiftPool = poolsByShift[row.shift] || {};
+    let remaining = Math.max(0, toFloat(row.demand));
+    const station = stationById[row.stationId];
+    if (!station || remaining <= 0) {
+      return;
+    }
+    const candidateWorkers = Object.keys(shiftPool)
+      .map((workerId) => workerById[workerId])
+      .filter((worker) => worker && clamp(toInt(worker.skills?.[row.stationId] || 0), 0, 3) > 0);
+    const sorted = workersSortedForStation(station, candidateWorkers);
+    sorted.forEach((worker) => {
+      if (remaining <= 0) {
+        return;
+      }
+      const workerId = String(worker.id || "").trim();
+      const available = Math.max(0, toFloat(shiftPool[workerId] || 0));
+      if (available <= 0) {
+        return;
+      }
+      const used = Math.min(available, remaining);
+      row.assignedMinutes += used;
+      remaining -= used;
+      row.assignedWorkers.push({
+        workerId,
+        name: worker.name,
+        level: clamp(toInt(worker.skills?.[row.stationId] || 0), 0, 3),
+        minutes: used,
+      });
+      delete shiftPool[workerId];
+    });
+  });
+
+  outputRows.forEach((row) => {
+    const perPersonMinutes = Math.max(1, toInt(state.settings?.minutesPerShift));
+    row.requiredWorkers = row.demand > 0 ? Math.max(1, Math.ceil(row.demand / perPersonMinutes)) : 0;
+    row.missingWorkers = Math.max(0, row.requiredWorkers - row.assignedWorkers.length);
+  });
+
+  return {
+    rows: outputRows.filter((row) => row.demand > 0 || row.assignedWorkers.length > 0),
+  };
+}
+
+function assignmentLabelForRow(row) {
+  if (!Array.isArray(row.assignedWorkers) || row.assignedWorkers.length === 0) {
+    return "-";
+  }
+  return row.assignedWorkers
+    .map((item) => `${item.name} (L${item.level}, ${item.minutes.toFixed(0)} min)`)
+    .join(", ");
+}
+
+function renderSkillsAllocation() {
+  if (!el.skillsAllocationSummary || !el.skillsAllocationTableBody) {
+    return;
+  }
+  const mode = String(el.skillsAllocationMode?.value || "day");
+  const anchor = normalizeOptionalDate(el.skillsAllocationAnchorDate?.value);
+  if (!anchor) {
+    el.skillsAllocationSummary.textContent = "Wybierz date bazowa.";
+    el.skillsAllocationTableBody.innerHTML = `<tr><td colspan="11">Brak danych.</td></tr>`;
+    return;
+  }
+  const activeWorkers = (state.skillWorkers || []).filter((worker) => worker.active !== false);
+  const activeStations = (state.stations || []).filter((station) => station.active !== false);
+  if (activeStations.length === 0) {
+    el.skillsAllocationSummary.textContent = "Brak aktywnych stanowisk.";
+    el.skillsAllocationTableBody.innerHTML = `<tr><td colspan="11">Dodaj i aktywuj stanowiska w ustawieniach.</td></tr>`;
+    return;
+  }
+  if (activeWorkers.length === 0) {
+    const range = executionRangeForSelection(mode, anchor);
+    el.skillsAllocationSummary.textContent = `${range.label} | Brak aktywnych pracownikow w matrycy.`;
+    el.skillsAllocationTableBody.innerHTML = `<tr><td colspan="11">Dodaj pracownikow i umiejetnosci, aby wygenerowac przydzial.</td></tr>`;
+    return;
+  }
+
+  const range = executionRangeForSelection(mode, anchor);
+  const dates = dateRange(range.start, range.end);
+  const rows = [];
+  let totalDemand = 0;
+  let totalAssignedMinutes = 0;
+  let totalRequired = 0;
+  let totalAssignedWorkers = 0;
+
+  dates.forEach((date) => {
+    const dayPlan = buildSkillsAllocationForDate(date, activeStations, activeWorkers);
+    rows.push(...dayPlan.rows);
+  });
+
+  rows.forEach((row) => {
+    totalDemand += toFloat(row.demand);
+    totalAssignedMinutes += toFloat(row.assignedMinutes);
+    totalRequired += toInt(row.requiredWorkers);
+    totalAssignedWorkers += Array.isArray(row.assignedWorkers) ? row.assignedWorkers.length : 0;
+  });
+
+  const totalMissing = Math.max(0, totalRequired - totalAssignedWorkers);
+  const totalCoverage = totalRequired > 0 ? (totalAssignedWorkers / totalRequired) * 100 : 100;
+  const minuteCoverage = totalDemand > 0 ? (totalAssignedMinutes / totalDemand) * 100 : 100;
+  el.skillsAllocationSummary.textContent = `${range.label} | Zapotrzebowanie: ${totalDemand.toFixed(
+    0,
+  )} min | Przydzielone minuty: ${totalAssignedMinutes.toFixed(0)} | Pokrycie minut: ${minuteCoverage.toFixed(
+    1,
+  )}% | Potrzeba: ${totalRequired} os. | Przydzielono: ${totalAssignedWorkers} os. | Braki: ${totalMissing} os. | Pokrycie obsady: ${totalCoverage.toFixed(
+    1,
+  )}%`;
+
+  if (rows.length === 0) {
+    el.skillsAllocationTableBody.innerHTML = `<tr><td colspan="11">Brak zapotrzebowania na stanowiska w wybranym zakresie.</td></tr>`;
+    return;
+  }
+  el.skillsAllocationTableBody.innerHTML = rows
+    .map((row) => {
+      const coverage = row.requiredWorkers > 0 ? (row.assignedWorkers.length / row.requiredWorkers) * 100 : 100;
+      return `
+        <tr>
+          <td>${escapeHtml(formatDate(row.date))}</td>
+          <td>${row.shift}</td>
+          <td>${escapeHtml(row.stationName)}</td>
+          <td>${escapeHtml(row.department)}</td>
+          <td>${row.demand.toFixed(0)}</td>
+          <td>${row.assignedMinutes.toFixed(0)}</td>
+          <td>${row.requiredWorkers}</td>
+          <td>${row.assignedWorkers.length}</td>
+          <td>${escapeHtml(assignmentLabelForRow(row))}</td>
+          <td>${coverage.toFixed(1)}%</td>
+          <td>${row.missingWorkers}</td>
         </tr>
       `;
     })
@@ -5688,6 +6540,12 @@ function toDate(dateValue) {
     fallback.setHours(0, 0, 0, 0);
     return fallback;
   }
+  return date;
+}
+
+function addDays(dateValue, days) {
+  const date = toDate(dateValue);
+  date.setDate(date.getDate() + toInt(days));
   return date;
 }
 

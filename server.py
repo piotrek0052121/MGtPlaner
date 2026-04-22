@@ -78,7 +78,18 @@ STATIONS = [
 
 MATERIAL_KEYS = ["wood", "corpus", "glass", "hardware", "accessories"]
 DEPARTMENTS = ["Maszynownia", "Lakiernia", "Kompletacja", "Kosmetyka"]
-USER_VISIBLE_SECTIONS = ["orders", "kpi", "gantt", "reports", "execution", "feedback", "archive", "users", "settings"]
+USER_VISIBLE_SECTIONS = [
+    "orders",
+    "kpi",
+    "gantt",
+    "reports",
+    "execution",
+    "skills",
+    "feedback",
+    "archive",
+    "users",
+    "settings",
+]
 DEFAULT_MATERIAL_RULES = {
     "Maszynownia": ["wood", "corpus"],
     "Lakiernia": ["wood", "corpus"],
@@ -868,6 +879,41 @@ def initialize(target_db_path=None):
         )
         """
     )
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS skill_workers (
+          id TEXT PRIMARY KEY,
+          name TEXT NOT NULL,
+          department TEXT NOT NULL,
+          active INTEGER NOT NULL DEFAULT 1
+        )
+        """
+    )
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS skill_worker_skills (
+          worker_id TEXT NOT NULL,
+          station_id TEXT NOT NULL,
+          level INTEGER NOT NULL DEFAULT 0,
+          PRIMARY KEY (worker_id, station_id),
+          FOREIGN KEY(worker_id) REFERENCES skill_workers(id) ON DELETE CASCADE
+        )
+        """
+    )
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS skill_worker_availability (
+          worker_id TEXT NOT NULL,
+          day TEXT NOT NULL,
+          shift INTEGER NOT NULL,
+          minutes INTEGER NOT NULL DEFAULT 0,
+          PRIMARY KEY (worker_id, day, shift),
+          FOREIGN KEY(worker_id) REFERENCES skill_workers(id) ON DELETE CASCADE
+        )
+        """
+    )
+    ensure_column(connection, "skill_workers", "active", "INTEGER NOT NULL DEFAULT 1")
+    connection.execute("UPDATE skill_workers SET active = COALESCE(active, 1)")
 
     settings_row = connection.execute("SELECT id FROM settings WHERE id = 1").fetchone()
     if not settings_row:
@@ -1358,6 +1404,75 @@ def get_orders(connection):
                 "plannedProductionDate": None,
                 "calculation": None,
                 "createdAt": item["created_at"],
+            }
+        )
+    return output
+
+
+def get_skill_workers(connection):
+    worker_rows = connection.execute(
+        """
+        SELECT id, name, department, active
+        FROM skill_workers
+        ORDER BY department, name, id
+        """
+    ).fetchall()
+    skill_rows = connection.execute(
+        """
+        SELECT worker_id, station_id, level
+        FROM skill_worker_skills
+        ORDER BY worker_id, station_id
+        """
+    ).fetchall()
+    skills_by_worker = {}
+    for row in skill_rows:
+        level = clamp_int(row["level"], 0, 3, 0)
+        if level <= 0:
+            continue
+        wid = str(row["worker_id"] or "")
+        if not wid:
+            continue
+        if wid not in skills_by_worker:
+            skills_by_worker[wid] = {}
+        skills_by_worker[wid][str(row["station_id"] or "")] = level
+
+    output = []
+    for row in worker_rows:
+        worker_id = str(row["id"] or "")
+        output.append(
+            {
+                "id": worker_id,
+                "name": str(row["name"] or "").strip(),
+                "department": str(row["department"] or "").strip() or "Maszynownia",
+                "active": bool(row["active"]),
+                "skills": skills_by_worker.get(worker_id, {}),
+            }
+        )
+    return output
+
+
+def get_skill_worker_availability(connection):
+    rows = connection.execute(
+        """
+        SELECT worker_id, day, shift, minutes
+        FROM skill_worker_availability
+        ORDER BY day, shift, worker_id
+        """
+    ).fetchall()
+    output = []
+    for row in rows:
+        worker_id = str(row["worker_id"] or "").strip()
+        day = str(row["day"] or "").strip()
+        shift = clamp_int(row["shift"], 1, 3, 1)
+        if not worker_id or not is_valid_iso_date(day):
+            continue
+        minutes = clamp_int(row["minutes"], 0, 1440, 0)
+        output.append(
+            {
+                "workerId": worker_id,
+                "date": day,
+                "shift": shift,
+                "minutes": minutes,
             }
         )
     return output
@@ -1880,6 +1995,8 @@ def api_bootstrap():
         "settings": get_settings(connection),
         "stations": get_stations(connection),
         "stationSettings": get_station_settings(connection),
+        "skillWorkers": get_skill_workers(connection),
+        "skillAvailability": get_skill_worker_availability(connection),
         "materialRules": get_material_rules(connection),
         "technologies": get_technology_allocations(connection),
         "databases": list_database_catalog_for_user(user, selected_key),
@@ -2825,6 +2942,24 @@ def api_create_database():
         WHERE COALESCE(login, '') <> ''
         """
     ).fetchall()
+    source_skill_workers = source_connection.execute(
+        """
+        SELECT id, name, department, active
+        FROM skill_workers
+        """
+    ).fetchall()
+    source_skill_levels = source_connection.execute(
+        """
+        SELECT worker_id, station_id, level
+        FROM skill_worker_skills
+        """
+    ).fetchall()
+    source_skill_availability = source_connection.execute(
+        """
+        SELECT worker_id, day, shift, minutes
+        FROM skill_worker_availability
+        """
+    ).fetchall()
     if source_users:
         target_connection.execute("DELETE FROM users")
         target_connection.executemany(
@@ -2849,6 +2984,67 @@ def api_create_database():
                 for row in source_users
             ],
         )
+    if source_skill_workers:
+        target_connection.execute("DELETE FROM skill_worker_skills")
+        target_connection.execute("DELETE FROM skill_workers")
+        target_connection.executemany(
+            "INSERT INTO skill_workers (id, name, department, active) VALUES (?, ?, ?, ?)",
+            [
+                (
+                    str(row["id"] or uuid.uuid4()),
+                    str(row["name"] or "").strip() or "Pracownik",
+                    normalize_skill_department(row["department"]),
+                    1 if bool(row["active"]) else 0,
+                )
+                for row in source_skill_workers
+            ],
+        )
+    if source_skill_levels:
+        worker_ids = {
+            str(row["id"] or "")
+            for row in target_connection.execute("SELECT id FROM skill_workers").fetchall()
+        }
+        station_ids = {
+            str(row["id"] or "")
+            for row in target_connection.execute("SELECT id FROM stations").fetchall()
+        }
+        rows_to_insert = []
+        for row in source_skill_levels:
+            worker_id = str(row["worker_id"] or "")
+            station_id = str(row["station_id"] or "")
+            if worker_id not in worker_ids or station_id not in station_ids:
+                continue
+            level = clamp_int(row["level"], 0, 3, 0)
+            if level <= 0:
+                continue
+            rows_to_insert.append((worker_id, station_id, level))
+        if rows_to_insert:
+            target_connection.executemany(
+                "INSERT INTO skill_worker_skills (worker_id, station_id, level) VALUES (?, ?, ?)",
+                rows_to_insert,
+            )
+    if source_skill_availability:
+        worker_ids = {
+            str(row["id"] or "")
+            for row in target_connection.execute("SELECT id FROM skill_workers").fetchall()
+        }
+        rows_to_insert = []
+        for row in source_skill_availability:
+            worker_id = str(row["worker_id"] or "").strip()
+            day = str(row["day"] or "").strip()
+            shift = clamp_int(row["shift"], 1, 3, 1)
+            minutes = clamp_int(row["minutes"], 0, 1440, 0)
+            if worker_id not in worker_ids or not is_valid_iso_date(day):
+                continue
+            rows_to_insert.append((worker_id, day, shift, minutes))
+        if rows_to_insert:
+            target_connection.executemany(
+                """
+                INSERT INTO skill_worker_availability (worker_id, day, shift, minutes)
+                VALUES (?, ?, ?, ?)
+                """,
+                rows_to_insert,
+            )
     if creator_login:
         creator_row = source_connection.execute(
             """
@@ -2974,6 +3170,57 @@ def require_admin_user_management():
     if deny:
         return jsonify({"error": "Tylko administrator moze zarzadzac uzytkownikami."}), 403
     return None
+
+
+def normalize_skill_department(value):
+    department = str(value or "").strip()
+    if department in DEPARTMENTS:
+        return department
+    return "Maszynownia"
+
+
+def normalize_skills_payload(raw_skills, valid_station_ids):
+    if not isinstance(raw_skills, dict):
+        return {}
+    output = {}
+    for raw_station_id, raw_level in raw_skills.items():
+        station_id = str(raw_station_id or "").strip()
+        if not station_id or station_id not in valid_station_ids:
+            continue
+        level = clamp_int(raw_level, 0, 3, 0)
+        if level <= 0:
+            continue
+        output[station_id] = level
+    return output
+
+
+def upsert_skill_worker(connection, worker_id, payload):
+    worker_name = str(payload.get("name", "")).strip()
+    if not worker_name:
+        return "Imie i nazwisko pracownika jest wymagane.", 400
+    department = normalize_skill_department(payload.get("department"))
+    active = to_bool(payload.get("active", True))
+    valid_station_ids = {item["id"] for item in get_stations(connection)}
+    normalized_skills = normalize_skills_payload(payload.get("skills"), valid_station_ids)
+
+    existing = connection.execute("SELECT id FROM skill_workers WHERE id = ?", (worker_id,)).fetchone()
+    if existing:
+        connection.execute(
+            "UPDATE skill_workers SET name = ?, department = ?, active = ? WHERE id = ?",
+            (worker_name, department, 1 if active else 0, worker_id),
+        )
+    else:
+        connection.execute(
+            "INSERT INTO skill_workers (id, name, department, active) VALUES (?, ?, ?, ?)",
+            (worker_id, worker_name, department, 1 if active else 0),
+        )
+    connection.execute("DELETE FROM skill_worker_skills WHERE worker_id = ?", (worker_id,))
+    if normalized_skills:
+        connection.executemany(
+            "INSERT INTO skill_worker_skills (worker_id, station_id, level) VALUES (?, ?, ?)",
+            [(worker_id, station_id, level) for station_id, level in normalized_skills.items()],
+        )
+    return None, None
 
 
 @app.post("/api/users")
@@ -3128,6 +3375,116 @@ def api_delete_user(user_id):
     connection.commit()
     connection.close()
     remove_database_access_login(row["login"])
+    return jsonify({"ok": True})
+
+
+@app.post("/api/skills/workers")
+def api_create_skill_worker():
+    payload = request.get_json(force=True)
+    worker_id = str(uuid.uuid4())
+    connection = db()
+    error_message, error_code = upsert_skill_worker(connection, worker_id, payload)
+    if error_message:
+        connection.close()
+        return jsonify({"error": error_message}), error_code
+    connection.commit()
+    connection.close()
+    return jsonify({"id": worker_id}), 201
+
+
+@app.put("/api/skills/workers/<worker_id>")
+def api_update_skill_worker(worker_id):
+    payload = request.get_json(force=True)
+    worker_id = str(worker_id or "").strip()
+    if not worker_id:
+        return jsonify({"error": "Brak identyfikatora pracownika."}), 400
+    connection = db()
+    row = connection.execute("SELECT id FROM skill_workers WHERE id = ?", (worker_id,)).fetchone()
+    if not row:
+        connection.close()
+        return jsonify({"error": "Nie znaleziono pracownika."}), 404
+    error_message, error_code = upsert_skill_worker(connection, worker_id, payload)
+    if error_message:
+        connection.close()
+        return jsonify({"error": error_message}), error_code
+    connection.commit()
+    connection.close()
+    return jsonify({"ok": True})
+
+
+@app.delete("/api/skills/workers/<worker_id>")
+def api_delete_skill_worker(worker_id):
+    worker_id = str(worker_id or "").strip()
+    if not worker_id:
+        return jsonify({"error": "Brak identyfikatora pracownika."}), 400
+    connection = db()
+    row = connection.execute("SELECT id FROM skill_workers WHERE id = ?", (worker_id,)).fetchone()
+    if not row:
+        connection.close()
+        return jsonify({"error": "Nie znaleziono pracownika."}), 404
+    connection.execute("DELETE FROM skill_worker_skills WHERE worker_id = ?", (worker_id,))
+    connection.execute("DELETE FROM skill_worker_availability WHERE worker_id = ?", (worker_id,))
+    connection.execute("DELETE FROM skill_workers WHERE id = ?", (worker_id,))
+    connection.commit()
+    connection.close()
+    return jsonify({"ok": True})
+
+
+@app.put("/api/skills/availability/bulk")
+def api_upsert_skill_availability_bulk():
+    payload = request.get_json(force=True)
+    worker_id = str(payload.get("workerId", "")).strip()
+    if not worker_id:
+        return jsonify({"error": "Wybierz pracownika."}), 400
+
+    entries = payload.get("entries")
+    if not isinstance(entries, list):
+        return jsonify({"error": "Nieprawidlowy format danych dostepnosci."}), 400
+
+    start_date = normalize_optional_date(payload.get("startDate"))
+    end_date = normalize_optional_date(payload.get("endDate"))
+    if start_date and not is_valid_iso_date(start_date):
+        return jsonify({"error": "Nieprawidlowa data startowa."}), 400
+    if end_date and not is_valid_iso_date(end_date):
+        return jsonify({"error": "Nieprawidlowa data koncowa."}), 400
+    if start_date and end_date and end_date < start_date:
+        return jsonify({"error": "Zakres dat jest nieprawidlowy."}), 400
+
+    normalized = []
+    for item in entries:
+        if not isinstance(item, dict):
+            continue
+        date_value = str(item.get("date", "")).strip()
+        if not is_valid_iso_date(date_value):
+            continue
+        shift = clamp_int(item.get("shift"), 1, 3, 1)
+        minutes = clamp_int(item.get("minutes"), 0, 1440, 0)
+        normalized.append((worker_id, date_value, shift, minutes))
+
+    connection = db()
+    row = connection.execute("SELECT id FROM skill_workers WHERE id = ?", (worker_id,)).fetchone()
+    if not row:
+        connection.close()
+        return jsonify({"error": "Nie znaleziono pracownika."}), 404
+
+    if start_date and end_date:
+        connection.execute(
+            "DELETE FROM skill_worker_availability WHERE worker_id = ? AND day >= ? AND day <= ?",
+            (worker_id, start_date, end_date),
+        )
+
+    if normalized:
+        connection.executemany(
+            """
+            INSERT INTO skill_worker_availability (worker_id, day, shift, minutes)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(worker_id, day, shift) DO UPDATE SET minutes = excluded.minutes
+            """,
+            normalized,
+        )
+
+    connection.commit()
+    connection.close()
     return jsonify({"ok": True})
 
 
@@ -3344,6 +3701,7 @@ def api_update_stations_config():
 
     for station_id in removed_ids:
         connection.execute("DELETE FROM station_settings WHERE station_id = ?", (station_id,))
+        connection.execute("DELETE FROM skill_worker_skills WHERE station_id = ?", (station_id,))
         connection.execute("DELETE FROM stations WHERE id = ?", (station_id,))
 
     for item in normalized_rows:

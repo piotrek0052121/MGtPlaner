@@ -36,10 +36,11 @@
         <button class="nav-btn" data-section="gantt"><span>4</span> Gantt</button>
         <button class="nav-btn" data-section="reports"><span>5</span> Raporty</button>
         <button class="nav-btn" data-section="execution"><span>6</span> Wykonanie</button>
-        <button class="nav-btn" data-section="feedback"><span>7</span> Informacja zwrotna</button>
-        <button class="nav-btn" data-section="archive"><span>8</span> Archiwum</button>
-        <button class="nav-btn" data-section="users"><span>9</span> Uzytkownicy</button>
-        <button class="nav-btn" data-section="settings"><span>10</span> Ustawienia</button>
+        <button class="nav-btn" data-section="skills"><span>7</span> Matryca umiejetnosci</button>
+        <button class="nav-btn" data-section="feedback"><span>8</span> Informacja zwrotna</button>
+        <button class="nav-btn" data-section="archive"><span>9</span> Archiwum</button>
+        <button class="nav-btn" data-section="users"><span>10</span> Uzytkownicy</button>
+        <button class="nav-btn" data-section="settings"><span>11</span> Ustawienia</button>
       </nav>
 
       <section class="content">
@@ -314,6 +315,107 @@
           </div>
         </section>
 
+        <section class="view" id="view-skills">
+          <div class="card-grid dashboard-grid">
+            <div class="card">
+              <h2>Matryca umiejetnosci pracownikow</h2>
+              <p>Poziomy: 0 (brak), 1 (podstawowy), 2 (samodzielny), 3 (ekspert).</p>
+              <form id="skillWorkerForm" class="form-grid">
+                <label>
+                  Pracownik
+                  <input id="skillWorkerNameInput" name="name" required />
+                </label>
+                <label>
+                  Dzial bazowy
+                  <select id="skillWorkerDepartmentSelect" name="department">
+                    <option value="Maszynownia">Maszynownia</option>
+                    <option value="Lakiernia">Lakiernia</option>
+                    <option value="Kompletacja">Kompletacja</option>
+                    <option value="Kosmetyka">Kosmetyka</option>
+                  </select>
+                </label>
+                <label class="checkbox-line checkbox-inline-top">
+                  <input id="skillWorkerActiveInput" type="checkbox" checked />
+                  Aktywny pracownik
+                </label>
+                <div class="full" id="skillWorkerSkillsWrap"></div>
+                <div class="full inline-controls">
+                  <button id="skillWorkerSubmitBtn" type="submit">Dodaj pracownika</button>
+                  <button id="cancelSkillWorkerEditBtn" type="button" class="ghost-btn panel-hidden">Anuluj edycje</button>
+                </div>
+              </form>
+            </div>
+
+            <div class="card">
+              <h2>Lista pracownikow</h2>
+              <div id="skillWorkersList" class="simple-list"></div>
+            </div>
+
+            <div class="card">
+              <h2>Dostepnosc pracownikow (kalendarz)</h2>
+              <p>Ustaw minuty dostepnosci dla konkretnej zmiany i dnia.</p>
+              <div class="inline-controls">
+                <label>
+                  Pracownik
+                  <select id="skillAvailabilityWorkerSelect"></select>
+                </label>
+                <label>
+                  Start
+                  <input type="date" id="skillAvailabilityStartDate" />
+                </label>
+                <label>
+                  Dni
+                  <input type="number" id="skillAvailabilityDays" min="1" max="60" step="1" value="14" />
+                </label>
+                <button id="renderSkillAvailabilityBtn" type="button">Pokaz kalendarz</button>
+                <button id="saveSkillAvailabilityBtn" type="button">Zapisz kalendarz</button>
+              </div>
+              <p id="skillAvailabilityStatus">Brak danych.</p>
+              <div id="skillAvailabilityGridWrap"></div>
+            </div>
+          </div>
+
+          <div class="card">
+            <h2>Raport rozlozenia pracownikow</h2>
+            <p>Raport oparty o zapotrzebowanie minutowe stanowisk z planu (Gantt) i dostepnosc pracownikow na zmiany.</p>
+            <div class="inline-controls">
+              <label>
+                Zakres
+                <select id="skillsAllocationMode">
+                  <option value="day">Dzien</option>
+                  <option value="week">Tydzien</option>
+                </select>
+              </label>
+              <label>
+                Data bazowa
+                <input type="date" id="skillsAllocationAnchorDate" />
+              </label>
+              <button id="runSkillsAllocationBtn" type="button">Generuj raport</button>
+            </div>
+            <p id="skillsAllocationSummary">Brak danych.</p>
+            <div class="table-wrap">
+              <table class="skills-allocation-table">
+                <thead>
+                  <tr>
+                    <th>Data</th>
+                    <th>Zmiana</th>
+                    <th>Stanowisko</th>
+                    <th>Dzial</th>
+                    <th>Zapotrzebowanie (min)</th>
+                    <th>Przydzielone min (realne)</th>
+                    <th>Potrzeba (os.)</th>
+                    <th>Przydzielono (os.)</th>
+                    <th>Przydzieleni pracownicy</th>
+                    <th>Pokrycie obsady</th>
+                    <th>Braki (os.)</th>
+                  </tr>
+                </thead>
+                <tbody id="skillsAllocationTableBody"></tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+
         <section class="view" id="view-workload">
           <div class="card">
             <h2>Oblozenie stanowisk (minuty zaplanowane)</h2>
@@ -432,6 +534,7 @@
                 <label class="checkbox-line"><input type="checkbox" name="visibleSection" value="gantt" checked />Gantt</label>
                 <label class="checkbox-line"><input type="checkbox" name="visibleSection" value="reports" checked />Raporty</label>
                 <label class="checkbox-line"><input type="checkbox" name="visibleSection" value="execution" checked />Wykonanie</label>
+                <label class="checkbox-line"><input type="checkbox" name="visibleSection" value="skills" checked />Matryca umiejetnosci</label>
                 <label class="checkbox-line"><input type="checkbox" name="visibleSection" value="feedback" checked />Informacja zwrotna</label>
                 <label class="checkbox-line"><input type="checkbox" name="visibleSection" value="archive" />Archiwum</label>
                 <label class="checkbox-line"><input type="checkbox" name="visibleSection" value="users" />Uzytkownicy</label>

@@ -1680,6 +1680,95 @@ pre {
   line-height: 1.4;
 }
 
+.skills-level-hint {
+  margin: 0 0 8px;
+  color: var(--ink-soft);
+  font-size: 13px;
+}
+
+.skills-level-list {
+  display: grid;
+  gap: 8px;
+  max-height: 360px;
+  overflow: auto;
+  padding-right: 2px;
+}
+
+.skills-level-row {
+  display: grid;
+  grid-template-columns: 1fr 80px;
+  gap: 10px;
+  align-items: center;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #f7fbef;
+  padding: 7px 8px;
+}
+
+.skills-level-station {
+  font-weight: 600;
+  color: #2f4658;
+}
+
+.skills-level-row input[type="number"] {
+  width: 80px;
+  text-align: center;
+}
+
+#skillsAllocationSummary {
+  margin: 10px 0 12px;
+  font-weight: 700;
+  color: #2f4658;
+}
+
+.skill-availability-table {
+  min-width: 980px;
+}
+
+.skill-availability-table th,
+.skill-availability-table td {
+  text-align: center;
+  vertical-align: middle;
+}
+
+.skill-availability-table thead th strong {
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.skill-availability-table thead th.sat {
+  background: #f1f3f5;
+}
+
+.skill-availability-table thead th.sun {
+  background: #ffe8e8;
+}
+
+.skill-availability-table input[type="number"] {
+  width: 82px;
+  text-align: center;
+}
+
+#skillAvailabilityStatus {
+  margin: 8px 0 10px;
+  color: #2f4658;
+  font-weight: 600;
+}
+
+.skills-allocation-table {
+  min-width: 1280px;
+}
+
+.skills-allocation-table th:nth-child(6),
+.skills-allocation-table td:nth-child(6) {
+  min-width: 150px;
+}
+
+.skills-allocation-table th:nth-child(9),
+.skills-allocation-table td:nth-child(9) {
+  min-width: 320px;
+}
+
 .database-access-wrap {
   margin-top: 6px;
 }
@@ -1831,6 +1920,14 @@ pre {
 
   .execution-controls {
     align-items: stretch;
+  }
+
+  .skills-level-row {
+    grid-template-columns: 1fr;
+  }
+
+  .skills-level-row input[type="number"] {
+    width: 100%;
   }
 }
 
