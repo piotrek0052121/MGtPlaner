@@ -104,11 +104,10 @@ body {
 }
 
 .app-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: flex-end;
-  flex-wrap: wrap;
-  gap: 16px;
+  display: grid;
+  grid-template-columns: 1fr;
+  align-items: start;
+  gap: 10px;
   padding: 18px 22px 6px;
 }
 
@@ -128,11 +127,10 @@ h1 {
 
 .header-stats {
   display: grid;
-  grid-template-columns: repeat(2, minmax(150px, 1fr));
+  grid-template-columns: repeat(2, minmax(220px, 1fr));
   gap: 10px;
-  width: min(460px, 100%);
-  margin-left: auto;
-  flex: 1 1 340px;
+  width: 100%;
+  margin-left: 0;
 }
 
 .chip {
@@ -142,7 +140,7 @@ h1 {
   padding: 6px 12px;
   min-width: 0;
   width: 100%;
-  min-height: 58px;
+  min-height: 62px;
   display: flex;
   flex-direction: column;
   justify-content: center;
@@ -2129,15 +2127,9 @@ pre {
 }
 
 @media (max-width: 980px) {
-  .app-header {
-    align-items: flex-start;
-  }
-
   .header-stats {
     width: 100%;
-    margin-left: 0;
     grid-template-columns: repeat(2, minmax(130px, 1fr));
-    flex: 1 1 auto;
   }
 
   .layout {
@@ -2213,8 +2205,6 @@ pre {
   }
 
   .app-header {
-    flex-direction: column;
-    align-items: flex-start;
     gap: 10px;
     padding: 12px 12px 6px;
   }
