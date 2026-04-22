@@ -3507,9 +3507,56 @@ def api_bulk_update_skill_worker_shift():
         (assigned_shift, *worker_ids),
     )
     updated = max(0, connection.total_changes - before_changes)
+
+    # Przy zmianie bazowej synchronizujemy kalendarz od dzisiaj:
+    # jedna zmiana na dzien, minuty przeniesione na nowa zmiane.
+    today_key = datetime.now().date().isoformat()
+    availability_rows = connection.execute(
+        f"""
+        SELECT worker_id, day, shift, minutes
+        FROM skill_worker_availability
+        WHERE worker_id IN ({placeholders}) AND day >= ?
+        ORDER BY worker_id, day, shift
+        """,
+        (*worker_ids, today_key),
+    ).fetchall()
+    by_worker_day = {}
+    for row in availability_rows:
+        worker_id = str(row["worker_id"] or "").strip()
+        day = str(row["day"] or "").strip()
+        shift = clamp_int(row["shift"], 1, 3, 1)
+        minutes = clamp_int(row["minutes"], 0, 1440, 0)
+        if not worker_id or not is_valid_iso_date(day):
+            continue
+        key = (worker_id, day)
+        if key not in by_worker_day:
+            by_worker_day[key] = {1: 0, 2: 0, 3: 0}
+        by_worker_day[key][shift] = minutes
+
+    rows_to_upsert = []
+    for (worker_id, day), shifts_map in by_worker_day.items():
+        carry_minutes = max(
+            clamp_int(shifts_map.get(1), 0, 1440, 0),
+            clamp_int(shifts_map.get(2), 0, 1440, 0),
+            clamp_int(shifts_map.get(3), 0, 1440, 0),
+        )
+        for shift in (1, 2, 3):
+            minutes = carry_minutes if shift == assigned_shift else 0
+            rows_to_upsert.append((worker_id, day, shift, minutes))
+
+    if rows_to_upsert:
+        connection.executemany(
+            """
+            INSERT INTO skill_worker_availability (worker_id, day, shift, minutes)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(worker_id, day, shift) DO UPDATE SET minutes = excluded.minutes
+            """,
+            rows_to_upsert,
+        )
+
     connection.commit()
     connection.close()
-    return jsonify({"ok": True, "updated": updated, "assignedShift": assigned_shift})
+    return jsonify({"ok": True, "updated": updated, "assignedShift": assigned_shift, "availabilitySynced": True})
 
 
 @app.put("/api/skills/workers/bulk-shift-range")
