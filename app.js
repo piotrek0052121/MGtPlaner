@@ -369,6 +369,7 @@ function bindActions() {
     event.preventDefault();
     safeAction(saveSkillWorker);
   });
+  el.skillWorkerDepartmentSelect?.addEventListener("change", renderSkillWorkerForm);
   el.cancelSkillWorkerEditBtn?.addEventListener("click", cancelSkillWorkerEdit);
   el.skillWorkersList?.addEventListener("click", onSkillWorkersListClick);
   el.runSkillsAllocationBtn?.addEventListener("click", renderSkillsAllocation);
@@ -1050,26 +1051,12 @@ function startSkillWorkerEdit(workerId) {
     return;
   }
   ui.editingSkillWorkerId = targetId;
-  if (el.skillWorkerNameInput) {
-    el.skillWorkerNameInput.value = worker.name || "";
-  }
   if (el.skillWorkerDepartmentSelect) {
     const departments = availableSkillDepartments();
     const validDepartment = departments.includes(worker.department) ? worker.department : departments[0] || DEPARTMENTS[0];
     el.skillWorkerDepartmentSelect.value = validDepartment;
   }
-  if (el.skillWorkerActiveInput) {
-    el.skillWorkerActiveInput.checked = worker.active !== false;
-  }
-  Array.from(el.skillWorkerSkillsWrap?.querySelectorAll("input[data-skill-level='1']") || []).forEach((input) => {
-    const stationId = String(input.dataset.stationId || "").trim();
-    const level = clamp(toInt(worker.skills?.[stationId] || 0), 0, 3);
-    input.value = String(level);
-  });
-  if (el.skillWorkerSubmitBtn) {
-    el.skillWorkerSubmitBtn.textContent = "Zapisz pracownika";
-  }
-  el.cancelSkillWorkerEditBtn?.classList.remove("panel-hidden");
+  renderSkillWorkerForm();
   el.skillWorkerNameInput?.focus();
 }
 
@@ -4432,30 +4419,29 @@ function renderSkillWorkerForm() {
   if (!el.skillWorkerForm || !el.skillWorkerSkillsWrap) {
     return;
   }
-  if (el.skillWorkerDepartmentSelect) {
-    const departments = availableSkillDepartments();
-    const currentDepartment = String(el.skillWorkerDepartmentSelect.value || "").trim();
-    el.skillWorkerDepartmentSelect.innerHTML = departments.map(
-      (department) => `<option value="${escapeHtml(department)}">${escapeHtml(department)}</option>`,
-    ).join("");
-    const validCurrent = departments.includes(currentDepartment);
-    el.skillWorkerDepartmentSelect.value = validCurrent ? currentDepartment : departments[0] || DEPARTMENTS[0];
-  }
-
-  const stations = Array.isArray(state.stations) ? state.stations : [];
+  const departments = availableSkillDepartments();
   const editingWorker = state.skillWorkers.find((item) => item.id === String(ui.editingSkillWorkerId || "").trim()) || null;
   if (!editingWorker && ui.editingSkillWorkerId) {
     ui.editingSkillWorkerId = "";
   }
+  const workerDepartment = String(editingWorker?.department || "").trim();
+  const currentDepartment = String(el.skillWorkerDepartmentSelect?.value || "").trim();
+  let selectedDepartment = departments.includes(currentDepartment) ? currentDepartment : "";
+  if (!selectedDepartment) {
+    selectedDepartment = departments.includes(workerDepartment) ? workerDepartment : departments[0] || DEPARTMENTS[0];
+  }
+  if (el.skillWorkerDepartmentSelect) {
+    el.skillWorkerDepartmentSelect.innerHTML = departments.map(
+      (department) => `<option value="${escapeHtml(department)}">${escapeHtml(department)}</option>`,
+    ).join("");
+    el.skillWorkerDepartmentSelect.value = selectedDepartment;
+  }
+  const stations = (Array.isArray(state.stations) ? state.stations : []).filter(
+    (station) => String(station?.department || "").trim() === selectedDepartment,
+  );
   if (editingWorker) {
     if (el.skillWorkerNameInput) {
       el.skillWorkerNameInput.value = editingWorker.name || "";
-    }
-    if (el.skillWorkerDepartmentSelect) {
-      const departments = availableSkillDepartments();
-      el.skillWorkerDepartmentSelect.value = departments.includes(editingWorker.department)
-        ? editingWorker.department
-        : departments[0] || DEPARTMENTS[0];
     }
     if (el.skillWorkerActiveInput) {
       el.skillWorkerActiveInput.checked = editingWorker.active !== false;
@@ -4472,7 +4458,9 @@ function renderSkillWorkerForm() {
   }
 
   if (stations.length === 0) {
-    el.skillWorkerSkillsWrap.innerHTML = "<p>Brak stanowisk. Dodaj stanowiska w Ustawieniach.</p>";
+    el.skillWorkerSkillsWrap.innerHTML = `<p>Brak stanowisk przypisanych do dzialu bazowego: <strong>${escapeHtml(
+      selectedDepartment,
+    )}</strong>.</p>`;
     if (el.skillWorkerSubmitBtn) {
       el.skillWorkerSubmitBtn.disabled = true;
     }
