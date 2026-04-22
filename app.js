@@ -190,6 +190,7 @@ const el = {
   skillWorkerForm: document.querySelector("#skillWorkerForm"),
   skillWorkerNameInput: document.querySelector("#skillWorkerNameInput"),
   skillWorkerDepartmentSelect: document.querySelector("#skillWorkerDepartmentSelect"),
+  skillWorkerPrimaryStationSelect: document.querySelector("#skillWorkerPrimaryStationSelect"),
   skillWorkerActiveInput: document.querySelector("#skillWorkerActiveInput"),
   skillWorkerSkillsWrap: document.querySelector("#skillWorkerSkillsWrap"),
   skillWorkerSubmitBtn: document.querySelector("#skillWorkerSubmitBtn"),
@@ -987,6 +988,7 @@ async function saveSkillWorker() {
   const payload = {
     name: String(el.skillWorkerNameInput?.value || "").trim(),
     department: String(el.skillWorkerDepartmentSelect?.value || departments[0] || DEPARTMENTS[0]),
+    primaryStationId: String(el.skillWorkerPrimaryStationSelect?.value || "").trim(),
     active: Boolean(el.skillWorkerActiveInput?.checked),
     skills: collectSkillLevelsFromForm(),
   };
@@ -2359,6 +2361,8 @@ function normalizeSkillWorkers(raw) {
     const department = departments.includes(String(item.department || "").trim())
       ? String(item.department || "").trim()
       : departments[0] || DEPARTMENTS[0];
+    const primaryStationIdRaw = String(item.primaryStationId || item.primary_station_id || "").trim();
+    const primaryStationId = stationIds.has(primaryStationIdRaw) ? primaryStationIdRaw : "";
     const skillMap = {};
     if (item.skills && typeof item.skills === "object" && !Array.isArray(item.skills)) {
       Object.entries(item.skills).forEach(([rawStationId, rawLevel]) => {
@@ -2376,6 +2380,7 @@ function normalizeSkillWorkers(raw) {
       id: workerId,
       name: String(item.name || "").trim(),
       department,
+      primaryStationId,
       active: item.active !== false,
       skills: skillMap,
     });
@@ -4425,6 +4430,25 @@ function renderSkillWorkerForm() {
   const stations = (Array.isArray(state.stations) ? state.stations : []).filter(
     (station) => station?.active !== false && String(station?.department || "").trim() === selectedDepartment,
   );
+  const primarySelect = el.skillWorkerPrimaryStationSelect;
+  if (primarySelect) {
+    const currentPrimary = String(primarySelect.value || "").trim();
+    const editingPrimary = String(editingWorker?.primaryStationId || "").trim();
+    const stationOptions = stations.map(
+      (station) =>
+        `<option value="${escapeHtml(station.id)}">${escapeHtml(station.name)} (${escapeHtml(station.id)})</option>`,
+    );
+    primarySelect.innerHTML = `<option value="">Brak przypisania</option>${stationOptions.join("")}`;
+    const validIds = new Set(stations.map((station) => String(station.id || "").trim()));
+    let selectedPrimary = "";
+    if (editingPrimary && validIds.has(editingPrimary)) {
+      selectedPrimary = editingPrimary;
+    } else if (currentPrimary && validIds.has(currentPrimary)) {
+      selectedPrimary = currentPrimary;
+    }
+    primarySelect.value = selectedPrimary;
+    primarySelect.disabled = stations.length === 0;
+  }
   if (editingWorker) {
     if (el.skillWorkerNameInput) {
       el.skillWorkerNameInput.value = editingWorker.name || "";
@@ -4516,11 +4540,15 @@ function renderSkillWorkersList() {
       const summary = entries.length
         ? entries.map((item) => `${item.stationName} (L${item.level})`).join(", ")
         : "Brak stanowisk";
+      const primaryStationName = worker.primaryStationId
+        ? stationNameById[worker.primaryStationId] || worker.primaryStationId
+        : "Brak przypisania";
       const activeText = worker.active === false ? "Nieaktywny" : "Aktywny";
       return `
         <li>
           <strong>${escapeHtml(worker.name || "-")}</strong>
           <span> | Dzial: ${escapeHtml(worker.department || "-")}</span>
+          <span> | Stanowisko glowne: ${escapeHtml(primaryStationName)}</span>
           <span> | Status: ${escapeHtml(activeText)}</span>
           <span> | Umiejetnosci: ${escapeHtml(summary)}</span>
           <span class="user-actions">
@@ -4849,7 +4877,15 @@ function buildSkillsAllocationForDate(date, stations, workers) {
       .filter(([workerId]) => Boolean(workerId)),
   );
   const stationById = Object.fromEntries(stations.map((station) => [station.id, station]));
-  const outputRows = shiftRows.map((row) => ({ ...row, assignedMinutes: 0, requiredWorkers: 0, assignedWorkers: [], missingWorkers: 0 }));
+  const outputRows = shiftRows.map((row) => ({
+    ...row,
+    assignedMinutes: 0,
+    requiredWorkers: 0,
+    assignedWorkers: [],
+    missingWorkers: 0,
+    suggestions: [],
+  }));
+  const workerUsageByShift = { 1: {}, 2: {}, 3: {} };
 
   outputRows.forEach((row) => {
     const shiftPool = poolsByShift[row.shift] || {};
@@ -4874,13 +4910,55 @@ function buildSkillsAllocationForDate(date, stations, workers) {
       const used = Math.min(available, remaining);
       row.assignedMinutes += used;
       remaining -= used;
+      const primaryStationId = String(worker.primaryStationId || "").trim();
+      const primaryStationName = primaryStationId ? stationById[primaryStationId]?.name || primaryStationId : "";
       row.assignedWorkers.push({
         workerId,
         name: worker.name,
         level: clamp(toInt(worker.skills?.[row.stationId] || 0), 0, 3),
         minutes: used,
+        primaryStationId,
+        primaryStationName,
+        isPrimary: primaryStationId && primaryStationId === row.stationId,
       });
-      delete shiftPool[workerId];
+      const remainingWorkerMinutes = Math.max(0, available - used);
+      if (remainingWorkerMinutes > 0.001) {
+        shiftPool[workerId] = remainingWorkerMinutes;
+      } else {
+        delete shiftPool[workerId];
+      }
+      if (!workerUsageByShift[row.shift][workerId]) {
+        workerUsageByShift[row.shift][workerId] = { worker, assignments: [] };
+      }
+      workerUsageByShift[row.shift][workerId].assignments.push({
+        rowRef: row,
+        stationId: row.stationId,
+        minutes: used,
+      });
+    });
+  });
+
+  [1, 2, 3].forEach((shift) => {
+    const usageMap = workerUsageByShift[shift] || {};
+    Object.values(usageMap).forEach((usage) => {
+      const worker = usage.worker || {};
+      const primaryStationId = String(worker.primaryStationId || "").trim();
+      if (!primaryStationId) {
+        return;
+      }
+      const primaryStationName = stationById[primaryStationId]?.name || primaryStationId;
+      usage.assignments.forEach((assignment) => {
+        if (assignment.stationId === primaryStationId) {
+          return;
+        }
+        const suggestionText =
+          usage.assignments.length > 1
+            ? `${worker.name}: uzupelnienie poza stanowiskiem glownym (${primaryStationName})`
+            : `${worker.name}: brak pelnego oblozenia na stanowisku glownym (${primaryStationName})`;
+        if (!assignment.rowRef.suggestions.includes(suggestionText)) {
+          assignment.rowRef.suggestions.push(suggestionText);
+        }
+      });
     });
   });
 
@@ -4900,7 +4978,10 @@ function assignmentLabelForRow(row) {
     return "-";
   }
   return row.assignedWorkers
-    .map((item) => `${item.name} (L${item.level}, ${item.minutes.toFixed(0)} min)`)
+    .map((item) => {
+      const crossText = item.isPrimary ? "" : item.primaryStationName ? `, uzup. z: ${item.primaryStationName}` : "";
+      return `${item.name} (L${item.level}, ${item.minutes.toFixed(0)} min${crossText})`;
+    })
     .join(", ");
 }
 
@@ -4912,20 +4993,20 @@ function renderSkillsAllocation() {
   const anchor = normalizeOptionalDate(el.skillsAllocationAnchorDate?.value);
   if (!anchor) {
     el.skillsAllocationSummary.textContent = "Wybierz date bazowa.";
-    el.skillsAllocationTableBody.innerHTML = `<tr><td colspan="11">Brak danych.</td></tr>`;
+    el.skillsAllocationTableBody.innerHTML = `<tr><td colspan="12">Brak danych.</td></tr>`;
     return;
   }
   const activeWorkers = (state.skillWorkers || []).filter((worker) => worker.active !== false);
   const activeStations = (state.stations || []).filter((station) => station.active !== false);
   if (activeStations.length === 0) {
     el.skillsAllocationSummary.textContent = "Brak aktywnych stanowisk.";
-    el.skillsAllocationTableBody.innerHTML = `<tr><td colspan="11">Dodaj i aktywuj stanowiska w ustawieniach.</td></tr>`;
+    el.skillsAllocationTableBody.innerHTML = `<tr><td colspan="12">Dodaj i aktywuj stanowiska w ustawieniach.</td></tr>`;
     return;
   }
   if (activeWorkers.length === 0) {
     const range = executionRangeForSelection(mode, anchor);
     el.skillsAllocationSummary.textContent = `${range.label} | Brak aktywnych pracownikow w matrycy.`;
-    el.skillsAllocationTableBody.innerHTML = `<tr><td colspan="11">Dodaj pracownikow i umiejetnosci, aby wygenerowac przydzial.</td></tr>`;
+    el.skillsAllocationTableBody.innerHTML = `<tr><td colspan="12">Dodaj pracownikow i umiejetnosci, aby wygenerowac przydzial.</td></tr>`;
     return;
   }
 
@@ -4961,7 +5042,7 @@ function renderSkillsAllocation() {
   )}%`;
 
   if (rows.length === 0) {
-    el.skillsAllocationTableBody.innerHTML = `<tr><td colspan="11">Brak zapotrzebowania na stanowiska w wybranym zakresie.</td></tr>`;
+    el.skillsAllocationTableBody.innerHTML = `<tr><td colspan="12">Brak zapotrzebowania na stanowiska w wybranym zakresie.</td></tr>`;
     return;
   }
   el.skillsAllocationTableBody.innerHTML = rows
@@ -4978,6 +5059,7 @@ function renderSkillsAllocation() {
           <td>${row.requiredWorkers}</td>
           <td>${row.assignedWorkers.length}</td>
           <td>${escapeHtml(assignmentLabelForRow(row))}</td>
+          <td>${escapeHtml((row.suggestions || []).join(" | ") || "-")}</td>
           <td>${coverage.toFixed(1)}%</td>
           <td>${row.missingWorkers}</td>
         </tr>

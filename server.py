@@ -895,6 +895,7 @@ def initialize(target_db_path=None):
           id TEXT PRIMARY KEY,
           name TEXT NOT NULL,
           department TEXT NOT NULL,
+          primary_station_id TEXT,
           active INTEGER NOT NULL DEFAULT 1
         )
         """
@@ -923,7 +924,16 @@ def initialize(target_db_path=None):
         """
     )
     ensure_column(connection, "skill_workers", "active", "INTEGER NOT NULL DEFAULT 1")
+    ensure_column(connection, "skill_workers", "primary_station_id", "TEXT")
     connection.execute("UPDATE skill_workers SET active = COALESCE(active, 1)")
+    connection.execute(
+        """
+        UPDATE skill_workers
+        SET primary_station_id = NULL
+        WHERE COALESCE(primary_station_id, '') <> ''
+          AND primary_station_id NOT IN (SELECT id FROM stations)
+        """
+    )
 
     settings_row = connection.execute("SELECT id FROM settings WHERE id = 1").fetchone()
     if not settings_row:
@@ -1422,7 +1432,7 @@ def get_orders(connection):
 def get_skill_workers(connection):
     worker_rows = connection.execute(
         """
-        SELECT id, name, department, active
+        SELECT id, name, department, primary_station_id, active
         FROM skill_workers
         ORDER BY department, name, id
         """
@@ -1454,6 +1464,7 @@ def get_skill_workers(connection):
                 "id": worker_id,
                 "name": str(row["name"] or "").strip(),
                 "department": str(row["department"] or "").strip() or "Maszynownia",
+                "primaryStationId": str(row["primary_station_id"] or "").strip(),
                 "active": bool(row["active"]),
                 "skills": skills_by_worker.get(worker_id, {}),
             }
@@ -2954,7 +2965,7 @@ def api_create_database():
     ).fetchall()
     source_skill_workers = source_connection.execute(
         """
-        SELECT id, name, department, active
+        SELECT id, name, department, primary_station_id, active
         FROM skill_workers
         """
     ).fetchall()
@@ -2998,16 +3009,25 @@ def api_create_database():
         target_connection.execute("DELETE FROM skill_worker_skills")
         target_connection.execute("DELETE FROM skill_workers")
         target_connection.executemany(
-            "INSERT INTO skill_workers (id, name, department, active) VALUES (?, ?, ?, ?)",
+            "INSERT INTO skill_workers (id, name, department, primary_station_id, active) VALUES (?, ?, ?, ?, ?)",
             [
                 (
                     str(row["id"] or uuid.uuid4()),
                     str(row["name"] or "").strip() or "Pracownik",
                     normalize_skill_department(row["department"]),
+                    str(row["primary_station_id"] or "").strip() or None,
                     1 if bool(row["active"]) else 0,
                 )
                 for row in source_skill_workers
             ],
+        )
+        target_connection.execute(
+            """
+            UPDATE skill_workers
+            SET primary_station_id = NULL
+            WHERE COALESCE(primary_station_id, '') <> ''
+              AND primary_station_id NOT IN (SELECT id FROM stations)
+            """
         )
     if source_skill_levels:
         worker_ids = {
@@ -3217,19 +3237,30 @@ def upsert_skill_worker(connection, worker_id, payload):
         return "Imie i nazwisko pracownika jest wymagane.", 400
     department = normalize_skill_department(payload.get("department"))
     active = to_bool(payload.get("active", True))
-    valid_station_ids = {item["id"] for item in get_stations(connection)}
+    stations = get_stations(connection)
+    station_by_id = {str(item.get("id") or ""): item for item in stations}
+    valid_station_ids = set(station_by_id.keys())
+    primary_station_id = str(payload.get("primaryStationId", "")).strip()
+    if primary_station_id:
+        station = station_by_id.get(primary_station_id)
+        if not station:
+            return "Wybrane stanowisko glowne nie istnieje.", 400
+        if str(station.get("department") or "").strip() != department:
+            return "Stanowisko glowne musi nalezec do tego samego dzialu bazowego.", 400
+        if not bool(station.get("active", True)):
+            return "Stanowisko glowne musi byc aktywne.", 400
     normalized_skills = normalize_skills_payload(payload.get("skills"), valid_station_ids)
 
     existing = connection.execute("SELECT id FROM skill_workers WHERE id = ?", (worker_id,)).fetchone()
     if existing:
         connection.execute(
-            "UPDATE skill_workers SET name = ?, department = ?, active = ? WHERE id = ?",
-            (worker_name, department, 1 if active else 0, worker_id),
+            "UPDATE skill_workers SET name = ?, department = ?, primary_station_id = ?, active = ? WHERE id = ?",
+            (worker_name, department, primary_station_id or None, 1 if active else 0, worker_id),
         )
     else:
         connection.execute(
-            "INSERT INTO skill_workers (id, name, department, active) VALUES (?, ?, ?, ?)",
-            (worker_id, worker_name, department, 1 if active else 0),
+            "INSERT INTO skill_workers (id, name, department, primary_station_id, active) VALUES (?, ?, ?, ?, ?)",
+            (worker_id, worker_name, department, primary_station_id or None, 1 if active else 0),
         )
     connection.execute("DELETE FROM skill_worker_skills WHERE worker_id = ?", (worker_id,))
     if normalized_skills:

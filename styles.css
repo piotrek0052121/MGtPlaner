@@ -1824,8 +1824,6 @@ pre {
 .skills-allocation-table td:nth-child(7),
 .skills-allocation-table th:nth-child(8),
 .skills-allocation-table td:nth-child(8),
-.skills-allocation-table th:nth-child(10),
-.skills-allocation-table td:nth-child(10),
 .skills-allocation-table th:nth-child(11),
 .skills-allocation-table td:nth-child(11) {
   text-align: center;
@@ -1839,6 +1837,18 @@ pre {
 .skills-allocation-table th:nth-child(9),
 .skills-allocation-table td:nth-child(9) {
   min-width: 220px;
+}
+
+.skills-allocation-table th:nth-child(10),
+.skills-allocation-table td:nth-child(10) {
+  min-width: 220px;
+}
+
+.skills-allocation-table th:nth-child(11),
+.skills-allocation-table td:nth-child(11),
+.skills-allocation-table th:nth-child(12),
+.skills-allocation-table td:nth-child(12) {
+  text-align: center;
 }
 
 .skill-availability-table thead th,
