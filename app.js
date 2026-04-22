@@ -4729,14 +4729,14 @@ function skillAvailabilityMinutes(workerId, date, shift) {
   if (shift !== assignedShift) {
     return 0;
   }
+  const dayShifts = clamp(toInt(shiftsForDate(date)), 0, 3);
+  if (dayShifts <= 0 && !hasAnyStationOvertimeOnDate(date)) {
+    return 0;
+  }
   const key = String(shift);
   const explicit = state.skillAvailability?.[workerId]?.[date];
   if (explicit && Object.prototype.hasOwnProperty.call(explicit, key)) {
     return clamp(toInt(explicit[key]), 0, 1440);
-  }
-  const allowedShifts = shiftsForDate(date);
-  if (shift > allowedShifts) {
-    return 0;
   }
   return clamp(toInt(state.settings?.minutesPerShift), 0, 1440);
 }
@@ -4893,9 +4893,9 @@ function stationShiftCapacitiesForDate(station, date) {
   const cfg = state.stationSettings?.[station.id] || { shiftCount: 2, peopleCount: 1 };
   const peopleCount = Math.max(1, toInt(cfg.peopleCount));
   const stationShiftLimit = clamp(toInt(cfg.shiftCount), 1, 3);
-  const dayShiftLimit = clamp(toInt(shiftsForDate(date)), 0, 3);
   const overtime = clamp(toInt(stationOvertimeMinutesForDate(station.id, date)), 0, 1440);
-  const effectiveShiftCount = Math.min(stationShiftLimit, dayShiftLimit);
+  const dayShiftLimit = clamp(toInt(shiftsForDate(date)), 0, 3);
+  const effectiveShiftCount = dayShiftLimit <= 0 ? 0 : stationShiftLimit;
   const base = Math.max(0, toInt(state.settings?.minutesPerShift)) * peopleCount;
   const output = [];
   if (effectiveShiftCount <= 0) {
@@ -6116,8 +6116,8 @@ function stationCapacityForDate(station, dateValue, ignoreWeekdayLimit = false) 
   const cfg = state.stationSettings[station.id] || { shiftCount: 2, peopleCount: 1 };
   const stationShiftCount = clamp(toInt(cfg.shiftCount), 1, 3);
   const peopleCount = Math.max(1, toInt(cfg.peopleCount));
-  const dayShifts = ignoreWeekdayLimit ? stationShiftCount : shiftsForDate(dateKey || new Date());
-  const effectiveShiftCount = ignoreWeekdayLimit ? stationShiftCount : Math.min(stationShiftCount, dayShifts);
+  const dayShifts = clamp(toInt(shiftsForDate(dateKey || new Date())), 0, 3);
+  const effectiveShiftCount = ignoreWeekdayLimit ? stationShiftCount : dayShifts <= 0 ? 0 : stationShiftCount;
   const overtimeMinutes = dateKey ? stationOvertimeMinutesForDate(station.id, dateKey) : 0;
   if (effectiveShiftCount <= 0) {
     return overtimeMinutes;
