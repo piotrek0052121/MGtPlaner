@@ -3113,6 +3113,13 @@ function ensureSelectedOrder() {
   ui.selectedOrderId = activeIds[0] || allIds[0] || "";
 }
 
+function orderHasAnyAttachment(order) {
+  if (!order || !Array.isArray(order.positions)) {
+    return false;
+  }
+  return order.positions.some((position) => String(position?.attachmentName || "").trim().length > 0);
+}
+
 function renderOrdersTable() {
   const active = operationalOrders().filter((order) => (order.orderStatus || "") !== "Zakonczone").length;
   const filteredOrders = operationalOrders().filter(orderMatchesMainFilters);
@@ -3137,6 +3144,7 @@ function renderOrdersTable() {
   el.ordersTableBody.innerHTML = visibleOrders
     .map((order) => {
       const blockedMaterials = pendingMaterialsCount(order);
+      const hasAttachment = orderHasAnyAttachment(order);
       const selectedClass = order.id === ui.selectedOrderId ? "selected-row" : "";
       const canArchive = (order.orderStatus || "") === "Zakonczone";
       const archiveChecked = canArchive && selectedArchiveOrders.has(order.id) ? "checked" : "";
@@ -3147,7 +3155,12 @@ function renderOrdersTable() {
         : `<span class="archive-order-disabled">-</span>`;
       return `
         <tr data-order-id="${order.id}" class="${selectedClass}">
-          <td>${escapeHtml(order.orderNumber)}</td>
+          <td>
+            <div class="order-number-cell">
+              <span>${escapeHtml(order.orderNumber)}</span>
+              ${hasAttachment ? '<span class="order-attachment-marker" title="Co najmniej jedna pozycja ma zalacznik">ZAL</span>' : ""}
+            </div>
+          </td>
           <td>${escapeHtml(order.client)}</td>
           <td>${formatDate(order.entryDate)}</td>
           <td>${formatDate(effectiveStartDate(order))}</td>

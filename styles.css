@@ -442,6 +442,26 @@ textarea {
   font-weight: 700;
 }
 
+.order-number-cell {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.order-attachment-marker {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 40px;
+  padding: 1px 8px;
+  border-radius: 999px;
+  border: 1px solid #9fd3aa;
+  background: #d7f0db;
+  color: #195c27;
+  font-size: 11px;
+  font-weight: 800;
+}
+
 .orders-table td:nth-child(2),
 .orders-table th:nth-child(2) {
   width: 210px;
